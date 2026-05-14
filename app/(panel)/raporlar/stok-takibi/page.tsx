@@ -6,6 +6,7 @@ import {
   Package,
   AlertTriangle,
   DollarSign,
+  Clock,
   Plus,
   Edit2,
   Trash2,
@@ -15,10 +16,11 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 
-// --- Types ---
+// ─── Types ────────────────────────────────────────────────────────────────────
+
 type Kategori = "Toksin" | "Dolgu" | "İp" | "Medikal" | "Sarf";
 
-type Stok = {
+interface Stok {
   id: string;
   urun_adi: string;
   kategori: Kategori;
@@ -28,643 +30,612 @@ type Stok = {
   son_kullanma_tarihi: string | null;
   notlar: string | null;
   created_at: string;
-};
+}
 
-type StokForm = {
+interface StokForm {
   urun_adi: string;
   kategori: Kategori;
   adet: number;
   kritik_seviye: number;
   birim_fiyat: number;
-  son_kullanma_tarihi: string | null;
+  son_kullanma_tarihi: string;
   notlar: string;
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const KATEGORI_OPTIONS: Kategori[] = ["Toksin", "Dolgu", "İp", "Medikal", "Sarf"];
+
+const KATEGORI_STYLE: Record<Kategori, { bg: string; text: string; bar: string }> = {
+  Toksin:  { bg: "bg-violet-50", text: "text-violet-700", bar: "bg-violet-500" },
+  Dolgu:   { bg: "bg-blue-50",   text: "text-blue-700",   bar: "bg-blue-500"   },
+  İp:      { bg: "bg-indigo-50", text: "text-indigo-700", bar: "bg-indigo-500" },
+  Medikal: { bg: "bg-sky-50",    text: "text-sky-700",    bar: "bg-sky-500"    },
+  Sarf:    { bg: "bg-cyan-50",   text: "text-cyan-700",   bar: "bg-cyan-500"   },
 };
 
-// --- Kategori Options ---
-const KATEGORI_OPTIONS: Kategori[] = [
-  "Toksin",
-  "Dolgu",
-  "İp",
-  "Medikal",
-  "Sarf",
-];
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// --- Helpers ---
-function currencyFormat(val: number) {
+function currency(val: number) {
   return val.toLocaleString("tr-TR", {
     style: "currency",
     currency: "TRY",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
   });
 }
 
-// --- Main Component ---
-export default function StokTakibiPage() {
-  // State (isim çakışmasını engelleyin)
-  const [stokListesi, setStokListesi] = useState<Stok[]>([]);
-  const [loading, setLoading] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
+function daysUntil(dateStr: string): number {
+  return Math.ceil((new Date(dateStr).getTime() - Date.now()) / 86_400_000);
+}
 
-  // Filtre/Arama
-  const [q, setQ] = useState<string>("");
-  const [kategoriFilter, setKategoriFilter] = useState<Kategori | "">("");
-
-  // Modal Durumu
-  const [modalOpen, setModalOpen] = useState<null | "yeni" | { edit: Stok }>(null);
-
-  // Form State
-  const [form, setForm] = useState<StokForm>({
-    urun_adi: "",
-    kategori: "Toksin",
-    adet: 0,
-    kritik_seviye: 5,
-    birim_fiyat: 0,
-    son_kullanma_tarihi: "",
-    notlar: "",
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleDateString("tr-TR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
   });
+}
 
-  // Silme için
+// ─── Sub-components ────────────────────────────────────────────────────────────
+
+function ExpiryBadge({ date }: { date: string }) {
+  const days = daysUntil(date);
+  const label = formatDate(date);
+  if (days < 0)
+    return <span className="text-xs font-bold text-white bg-rose-600 px-2 py-0.5 rounded-full">Süresi doldu</span>;
+  if (days <= 30)
+    return <span className="text-xs font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full">{label} · {days}g</span>;
+  if (days <= 60)
+    return <span className="text-xs font-semibold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">{label} · {days}g</span>;
+  return <span className="text-xs text-slate-500 bg-slate-50 px-2 py-0.5 rounded-full">{label}</span>;
+}
+
+function StockBar({ adet, kritikSeviye }: { adet: number; kritikSeviye: number }) {
+  const target = Math.max(kritikSeviye * 4, adet, 1);
+  const pct = Math.min((adet / target) * 100, 100);
+  const isKritik = adet <= kritikSeviye;
+  const isDusuk = !isKritik && pct < 40;
+  const barColor = isKritik ? "bg-rose-500" : isDusuk ? "bg-amber-400" : "bg-emerald-400";
+  return (
+    <div className="flex items-center gap-2 min-w-[130px]">
+      <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+        <div className={clsx("h-full rounded-full transition-all duration-700", barColor)} style={{ width: `${pct}%` }} />
+      </div>
+      <span className={clsx("text-sm font-bold tabular-nums shrink-0 w-7 text-right", isKritik ? "text-rose-700" : "text-slate-800")}>
+        {adet}
+      </span>
+      {isKritik && <AlertTriangle size={13} className="text-rose-500 shrink-0" />}
+    </div>
+  );
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+
+export default function StokTakibiPage() {
+  const [stokListesi, setStokListesi] = useState<Stok[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [q, setQ] = useState("");
+  const [kategoriFilter, setKategoriFilter] = useState<Kategori | "">("");
+  const [modalOpen, setModalOpen] = useState<null | "yeni" | { edit: Stok }>(null);
+  const [form, setForm] = useState<StokForm>({
+    urun_adi: "", kategori: "Toksin", adet: 0, kritik_seviye: 5,
+    birim_fiyat: 0, son_kullanma_tarihi: "", notlar: "",
+  });
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [formLoading, setFormLoading] = useState(false);
 
-  // --- Data Fetch ---
+  // ── Fetch ──────────────────────────────────────────────────────────────────
   async function fetchStoklar() {
     setLoading(true);
-    setError(null);
-    const { data, error } = await supabase
-      .from("stoklar")
-      .select("*")
-      .order("urun_adi", { ascending: true });
-
-    if (error) setError(error.message);
-    else setStokListesi(data as Stok[]);
+    const { data } = await supabase.from("stoklar").select("*").order("urun_adi", { ascending: true });
+    if (Array.isArray(data)) setStokListesi(data as Stok[]);
     setLoading(false);
   }
 
-  useEffect(() => {
-    fetchStoklar();
-  }, []);
+  useEffect(() => { fetchStoklar(); }, []);
 
-  // Kritik stoklar
+  // ── Derived ────────────────────────────────────────────────────────────────
   const kritikStoklar = useMemo(
-    () => stokListesi.filter((s: Stok) => s.adet <= s.kritik_seviye),
+    () => stokListesi.filter((s) => s.adet <= s.kritik_seviye),
     [stokListesi]
   );
 
-  // Toplam Stok Değeri
-  const toplamStokDegeri = useMemo(
-    () =>
-      stokListesi.reduce(
-        (sum: number, stok: Stok) =>
-          sum +
-          (typeof stok.birim_fiyat === "number" && typeof stok.adet === "number"
-            ? stok.adet * stok.birim_fiyat
-            : 0),
-        0
-      ),
+  const toplamDeger = useMemo(
+    () => stokListesi.reduce((sum, s) => sum + s.adet * s.birim_fiyat, 0),
     [stokListesi]
   );
 
-  // Tablo verisi (filtreleme)
+  const yakindaSonacak = useMemo(() => {
+    const limit = new Date();
+    limit.setDate(limit.getDate() + 60);
+    return stokListesi.filter(
+      (s) => s.son_kullanma_tarihi && new Date(s.son_kullanma_tarihi) <= limit
+    );
+  }, [stokListesi]);
+
+  // Category stats (sorted by value desc)
+  const kategoriStats = useMemo(() => {
+    const stats: Record<string, { urunSayisi: number; adet: number; deger: number; kritik: number }> = {};
+    stokListesi.forEach((s) => {
+      if (!stats[s.kategori]) stats[s.kategori] = { urunSayisi: 0, adet: 0, deger: 0, kritik: 0 };
+      stats[s.kategori].urunSayisi++;
+      stats[s.kategori].adet += s.adet;
+      stats[s.kategori].deger += s.adet * s.birim_fiyat;
+      if (s.adet <= s.kritik_seviye) stats[s.kategori].kritik++;
+    });
+    return Object.entries(stats).sort((a, b) => b[1].deger - a[1].deger);
+  }, [stokListesi]);
+
+  // Filtered table — critical items first, then alphabetical
   const tableData = useMemo(() => {
-    let data = [...stokListesi];
-    if (kategoriFilter) data = data.filter((s) => s.kategori === kategoriFilter);
-    if (q)
-      data = data.filter((s) =>
-        s.urun_adi?.toLocaleLowerCase("tr-TR").includes(q.toLocaleLowerCase("tr-TR"))
-      );
-    // Burada isterseniz sıralama da ekleyebilirsiniz:
-    data.sort((a: Stok, b: Stok) => a.urun_adi.localeCompare(b.urun_adi, "tr-TR"));
-    return data;
+    let d = [...stokListesi];
+    if (kategoriFilter) d = d.filter((s) => s.kategori === kategoriFilter);
+    if (q) d = d.filter((s) => s.urun_adi.toLocaleLowerCase("tr-TR").includes(q.toLocaleLowerCase("tr-TR")));
+    d.sort((a, b) => {
+      const aK = a.adet <= a.kritik_seviye;
+      const bK = b.adet <= b.kritik_seviye;
+      if (aK !== bK) return aK ? -1 : 1;
+      return a.urun_adi.localeCompare(b.urun_adi, "tr-TR");
+    });
+    return d;
   }, [stokListesi, q, kategoriFilter]);
 
-  // --- Modal Actions ---
-  function openYeniUrun() {
-    setForm({
-      urun_adi: "",
-      kategori: "Toksin",
-      adet: 0,
-      kritik_seviye: 5,
-      birim_fiyat: 0,
-      son_kullanma_tarihi: "",
-      notlar: "",
-    });
+  // ── Actions ────────────────────────────────────────────────────────────────
+  function openYeni() {
+    setForm({ urun_adi: "", kategori: "Toksin", adet: 0, kritik_seviye: 5, birim_fiyat: 0, son_kullanma_tarihi: "", notlar: "" });
     setModalOpen("yeni");
   }
 
-  function openEdit(stok: Stok) {
+  function openEdit(s: Stok) {
     setForm({
-      urun_adi: stok.urun_adi,
-      kategori: stok.kategori,
-      adet: stok.adet,
-      kritik_seviye: stok.kritik_seviye,
-      birim_fiyat: stok.birim_fiyat,
-      son_kullanma_tarihi: stok.son_kullanma_tarihi ?? "",
-      notlar: stok.notlar ?? "",
+      urun_adi: s.urun_adi, kategori: s.kategori, adet: s.adet, kritik_seviye: s.kritik_seviye,
+      birim_fiyat: s.birim_fiyat, son_kullanma_tarihi: s.son_kullanma_tarihi ?? "", notlar: s.notlar ?? "",
     });
-    setModalOpen({ edit: stok });
+    setModalOpen({ edit: s });
   }
 
-  // --- Form Actions ---
-  async function handleFormSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setLoading(true);
-
+    setFormLoading(true);
+    const payload = {
+      ...form,
+      son_kullanma_tarihi: form.son_kullanma_tarihi || null,
+      notlar: form.notlar || null,
+    };
     if (modalOpen === "yeni") {
-      // Insert
-      const { error } = await supabase.from("stoklar").insert({
-        urun_adi: form.urun_adi,
-        kategori: form.kategori,
-        adet: form.adet,
-        kritik_seviye: form.kritik_seviye,
-        birim_fiyat: form.birim_fiyat,
-        son_kullanma_tarihi: form.son_kullanma_tarihi
-          ? form.son_kullanma_tarihi
-          : null,
-        notlar: form.notlar ? form.notlar : null,
-      });
-      if (error) alert("Hata: " + error.message);
+      await supabase.from("stoklar").insert(payload);
     } else if (modalOpen && "edit" in modalOpen) {
-      // Update
-      const { edit } = modalOpen;
-      const { error } = await supabase
-        .from("stoklar")
-        .update({
-          urun_adi: form.urun_adi,
-          kategori: form.kategori,
-          adet: form.adet,
-          kritik_seviye: form.kritik_seviye,
-          birim_fiyat: form.birim_fiyat,
-          son_kullanma_tarihi: form.son_kullanma_tarihi
-            ? form.son_kullanma_tarihi
-            : null,
-          notlar: form.notlar ? form.notlar : null,
-        })
-        .eq("id", edit.id);
-      if (error) alert("Hata: " + error.message);
+      await supabase.from("stoklar").update(payload).eq("id", modalOpen.edit.id);
     }
     await fetchStoklar();
-    setLoading(false);
+    setFormLoading(false);
     setModalOpen(null);
   }
 
   async function handleDelete(id: string) {
     setDeleteLoading(true);
-    const { error } = await supabase.from("stoklar").delete().eq("id", id);
-    if (error) alert("Hata: " + error.message);
+    await supabase.from("stoklar").delete().eq("id", id);
     await fetchStoklar();
     setDeleteLoading(false);
     setDeleteId(null);
   }
 
-  // --- Render ---
+  const maxKategoriDeger = kategoriStats[0]?.[1].deger ?? 1;
+
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="max-w-6xl 2xl:max-w-7xl mx-auto px-4 py-8">
-      <div className="flex justify-between items-center mb-8 gap-4 flex-wrap">
-        <h1 className="text-2xl md:text-3xl font-semibold text-slate-800 flex items-center gap-3">
-          <Package className="text-blue-500" size={28} />
-          Klinik Envanter Takibi
-        </h1>
+    <div className="p-6 lg:p-8 bg-slate-50 min-h-full space-y-6">
+
+      {/* ── Header ── */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">Stok Takibi</h1>
+          <p className="text-sm text-slate-400 mt-0.5">Klinik envanter ve malzeme yönetimi</p>
+        </div>
         <button
-          onClick={openYeniUrun}
-          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 transition px-4 py-2 rounded-lg text-white font-semibold shadow focus:outline-none"
+          onClick={openYeni}
+          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition shadow-sm self-start sm:self-auto"
         >
-          <Plus size={18} className="mr-1" />
-          Yeni Ürün Ekle
+          <Plus size={16} /> Yeni Ürün Ekle
         </button>
       </div>
 
-      {/* --- KPI CARDS --- */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
-        {/* Toplam Ürün Çeşidi */}
-        <KpiCard
-          title="Toplam Ürün Çeşidi"
-          value={stokListesi.length}
-          icon={<Package size={28} className="text-blue-500" />}
-          borderColor="border-blue-200"
-          bgColor="bg-blue-50"
-        />
-        {/* Kritik Seviyedeki Ürünler */}
-        <KpiCard
-          title="Kritik Seviyedeki Ürünler"
-          value={kritikStoklar.length}
-          icon={<AlertTriangle size={28} className="text-rose-500" />}
-          borderColor="border-rose-200"
-          bgColor="bg-rose-50"
-          highlight="rose"
-        />
-        {/* Toplam Stok Değeri */}
-        <KpiCard
-          title="Toplam Stok Değeri"
-          value={currencyFormat(toplamStokDegeri)}
-          icon={<DollarSign size={28} className="text-blue-500" />}
-          borderColor="border-blue-200"
-          bgColor="bg-blue-50"
-        />
-      </div>
+      {/* ── KPI Cards ── */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
 
-      {/* --- SEARCH & FILTER --- */}
-      <div className="flex flex-col md:flex-row items-stretch md:items-center gap-3 mb-5">
-        {/* Search */}
-        <div className="flex items-center w-full md:w-60 rounded-lg border border-slate-200 bg-white px-3 py-2 transition focus-within:ring-2 focus-within:ring-blue-200">
-          <Search className="text-slate-400 mr-2" size={18} />
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Ürün adı ara..."
-            className="bg-transparent outline-none text-slate-700 w-full"
-          />
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
+          <div className="p-2 bg-blue-50 rounded-xl w-fit mb-3">
+            <Package size={18} className="text-blue-600" />
+          </div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Ürün Çeşidi</p>
+          <p className="text-3xl font-bold text-slate-900 mt-1">{stokListesi.length}</p>
+          <p className="text-xs text-slate-400 mt-1">{stokListesi.reduce((s, k) => s + k.adet, 0)} toplam adet</p>
         </div>
-        {/* Kategori Filter */}
-        <div className="flex items-center w-full md:w-52 rounded-lg border border-slate-200 bg-white px-3 py-2 gap-2">
-          <Filter size={18} className="text-blue-400" />
-          <select
-            value={kategoriFilter}
-            onChange={(e) => setKategoriFilter(e.target.value as Kategori | "")}
-            className="bg-transparent outline-none text-slate-700 w-full"
-          >
-            <option value="">Tüm Kategoriler</option>
-            {KATEGORI_OPTIONS.map((k) => (
-              <option key={k} value={k}>
-                {k}
-              </option>
-            ))}
-          </select>
+
+        <div className={clsx(
+          "rounded-2xl border shadow-sm p-5",
+          kritikStoklar.length > 0 ? "bg-rose-50 border-rose-100" : "bg-white border-slate-100"
+        )}>
+          <div className={clsx("p-2 rounded-xl w-fit mb-3", kritikStoklar.length > 0 ? "bg-rose-100" : "bg-slate-50")}>
+            <AlertTriangle size={18} className={kritikStoklar.length > 0 ? "text-rose-600" : "text-slate-400"} />
+          </div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Kritik Stok</p>
+          <p className={clsx("text-3xl font-bold mt-1", kritikStoklar.length > 0 ? "text-rose-700" : "text-slate-900")}>
+            {kritikStoklar.length}
+          </p>
+          <p className="text-xs text-slate-400 mt-1">{kritikStoklar.length > 0 ? "acil sipariş gerekiyor" : "stok yeterli"}</p>
+        </div>
+
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
+          <div className="p-2 bg-emerald-50 rounded-xl w-fit mb-3">
+            <DollarSign size={18} className="text-emerald-600" />
+          </div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Toplam Değer</p>
+          <p className="text-xl font-bold text-slate-900 mt-1 tabular-nums">{currency(toplamDeger)}</p>
+          <p className="text-xs text-slate-400 mt-1">envanter maliyeti</p>
+        </div>
+
+        <div className={clsx(
+          "rounded-2xl border shadow-sm p-5",
+          yakindaSonacak.length > 0 ? "bg-amber-50 border-amber-100" : "bg-white border-slate-100"
+        )}>
+          <div className={clsx("p-2 rounded-xl w-fit mb-3", yakindaSonacak.length > 0 ? "bg-amber-100" : "bg-slate-50")}>
+            <Clock size={18} className={yakindaSonacak.length > 0 ? "text-amber-600" : "text-slate-400"} />
+          </div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">SKT Uyarısı</p>
+          <p className={clsx("text-3xl font-bold mt-1", yakindaSonacak.length > 0 ? "text-amber-700" : "text-slate-900")}>
+            {yakindaSonacak.length}
+          </p>
+          <p className="text-xs text-slate-400 mt-1">60 gün içinde sona eriyor</p>
         </div>
       </div>
 
-      {/* --- TABLE --- */}
-      <div className="bg-white border border-slate-100 rounded-xl shadow-sm overflow-x-auto">
-        <table className="min-w-full text-sm">
-          <thead>
-            <tr className="text-slate-600 text-left font-semibold">
-              <th className="px-5 py-3">Ürün Adı</th>
-              <th className="px-5 py-3">Kategori</th>
-              <th className="px-5 py-3">Son Kullanma Tarihi</th>
-              <th className="px-5 py-3">Birim Fiyat</th>
-              <th className="px-5 py-3">Stok Durumu</th>
-              <th className="px-5 py-3">Notlar</th>
-              <th className="px-5 py-3 text-center">İşlemler</th>
-            </tr>
-          </thead>
-          <tbody>
-            {tableData.length === 0 && (
-              <tr>
-                <td colSpan={7} className="px-5 py-6 text-center text-slate-400">
-                  Kayıt bulunamadı.
-                </td>
-              </tr>
-            )}
-            {tableData.map((s: Stok) => {
-              const kritik = s.adet <= s.kritik_seviye;
-              return (
-                <tr
-                  key={s.id}
-                  className={clsx(
-                    "transition",
-                    kritik &&
-                      "bg-rose-50/80 border-b-2 border-rose-200 animate-pulse"
-                  )}
-                >
-                  {/* Ürün Adı */}
-                  <td className="px-5 py-3 max-w-[210px] font-medium text-slate-900">
-                    {s.urun_adi}
-                  </td>
-                  {/* Kategori */}
-                  <td className="px-5 py-3">{s.kategori}</td>
-                  {/* Son Kullanma Tarihi */}
-                  <td className="px-5 py-3">
-                    {s.son_kullanma_tarihi ? (
-                      <span className="inline-block bg-blue-50 border border-blue-100 px-2.5 py-1 rounded text-xs text-blue-700">
-                        {s.son_kullanma_tarihi}
-                      </span>
-                    ) : (
-                      <span className="text-slate-400">-</span>
-                    )}
-                  </td>
-                  {/* Birim Fiyat */}
-                  <td className="px-5 py-3">{currencyFormat(s.birim_fiyat)}</td>
-                  {/* Stok Durumu */}
-                  <td className="px-5 py-3 font-semibold text-slate-800">
-                    <div className="flex gap-1 items-center">
-                      <span
-                        className={clsx(
-                          "py-0.5 px-2 rounded-lg",
-                          kritik
-                            ? "bg-rose-100 text-rose-600 border border-rose-200"
-                            : "bg-blue-50 text-blue-700 border border-blue-100"
-                        )}
-                      >
-                        {s.adet}
-                      </span>
-                      {kritik && (
-                        <span className="flex items-center gap-1 ml-2 text-xs text-rose-500 font-medium animate-pulse">
-                          <AlertTriangle size={16} />
-                          Kritik Stok!
-                        </span>
-                      )}
+      {/* ── Critical Alert + Category Breakdown ── */}
+      {stokListesi.length > 0 && (
+        <div className={clsx("grid grid-cols-1 gap-6", kritikStoklar.length > 0 ? "lg:grid-cols-2" : "")}>
+
+          {/* Critical items */}
+          {kritikStoklar.length > 0 && (
+            <div className="bg-rose-50 border border-rose-100 rounded-2xl p-6">
+              <div className="flex items-center gap-2 mb-4">
+                <AlertTriangle size={15} className="text-rose-600" />
+                <h2 className="text-sm font-bold text-rose-700 uppercase tracking-wider">Kritik Stok Listesi</h2>
+              </div>
+              <div className="space-y-2">
+                {kritikStoklar.map((s) => (
+                  <div key={s.id} className="flex items-center justify-between bg-white rounded-xl px-4 py-3 border border-rose-100">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-slate-800 truncate">{s.urun_adi}</p>
+                      <p className="text-xs text-slate-400">{s.kategori}</p>
                     </div>
-                  </td>
-                  {/* Notlar */}
-                  <td className="px-5 py-3 text-slate-600">
-                    {s.notlar ? (
-                      <span className="text-xs">{s.notlar}</span>
-                    ) : (
-                      <span className="text-slate-300">-</span>
-                    )}
-                  </td>
-                  {/* İşlemler */}
-                  <td className="px-5 py-3 text-center flex gap-1 justify-center items-center">
-                    <button
-                      onClick={() => openEdit(s)}
-                      className="p-2 rounded text-blue-600 hover:bg-blue-50 transition"
-                      title="Düzenle"
-                    >
-                      <Edit2 size={18} />
-                    </button>
-                    <button
-                      onClick={() => setDeleteId(s.id)}
-                      className="p-2 rounded text-rose-600 hover:bg-rose-50 transition"
-                      title="Sil"
-                    >
-                      <Trash2 size={18} />
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                    <div className="text-right shrink-0 ml-3">
+                      <p className="text-lg font-bold text-rose-700 tabular-nums">{s.adet}</p>
+                      <p className="text-xs text-slate-400">min. {s.kritik_seviye}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
-      {/* --- MODAL: Ekle/Düzenle --- */}
-      {modalOpen && (
-        <Modal onClose={() => setModalOpen(null)}>
-          <form
-            className="bg-white rounded-xl p-8 max-w-md shadow-xl w-full"
-            onSubmit={handleFormSubmit}
-          >
-            <div className="mb-6 flex items-center gap-2 font-semibold text-lg">
-              <Package size={22} className="text-blue-500" />
-              {modalOpen === "yeni" ? "Yeni Ürün Ekle" : "Ürünü Düzenle"}
+          {/* Category breakdown */}
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6">
+            <div className="flex items-center gap-2 mb-5">
+              <Package size={15} className="text-slate-400" />
+              <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wider">Kategori Özeti</h2>
             </div>
             <div className="space-y-4">
-              {/* Ürün Adı */}
-              <div>
-                <label className="block mb-1 text-slate-600 font-medium">
-                  Ürün Adı
-                </label>
-                <input
-                  type="text"
-                  required
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-blue-200"
-                  value={form.urun_adi}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, urun_adi: e.target.value }))
-                  }
-                />
-              </div>
-              {/* Kategori */}
-              <div>
-                <label className="block mb-1 text-slate-600 font-medium">
-                  Kategori
-                </label>
-                <select
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-blue-200"
-                  value={form.kategori}
-                  onChange={(e) =>
-                    setForm((f) => ({
-                      ...f,
-                      kategori: e.target.value as Kategori,
-                    }))
-                  }
-                >
-                  {KATEGORI_OPTIONS.map((k) => (
-                    <option value={k} key={k}>
-                      {k}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {/* Mevcut Adet */}
-              <div>
-                <label className="block mb-1 text-slate-600 font-medium">
-                  Mevcut Adet
-                </label>
-                <input
-                  type="number"
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-blue-200"
-                  value={form.adet}
-                  min={0}
-                  onChange={(e) =>
-                    setForm((f) => ({
-                      ...f,
-                      adet: Number(e.target.value),
-                    }))
-                  }
-                  required
-                />
-              </div>
-              {/* Kritik Seviye */}
-              <div>
-                <label className="block mb-1 text-slate-600 font-medium">
-                  Kritik Seviye
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-blue-200"
-                  value={form.kritik_seviye}
-                  onChange={(e) =>
-                    setForm((f) => ({
-                      ...f,
-                      kritik_seviye: Number(e.target.value),
-                    }))
-                  }
-                  required
-                />
-              </div>
-              {/* Birim Fiyat */}
-              <div>
-                <label className="block mb-1 text-slate-600 font-medium">
-                  Birim Fiyat (₺)
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  step={0.01}
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-blue-200"
-                  value={form.birim_fiyat}
-                  onChange={(e) =>
-                    setForm((f) => ({
-                      ...f,
-                      birim_fiyat: Number(e.target.value),
-                    }))
-                  }
-                  required
-                />
-              </div>
-              {/* Son Kullanma Tarihi */}
-              <div>
-                <label className="block mb-1 text-slate-600 font-medium">
-                  Son Kullanma Tarihi (SKT)
-                </label>
-                <input
-                  type="date"
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-blue-200"
-                  value={form.son_kullanma_tarihi || ""}
-                  onChange={(e) =>
-                    setForm((f) => ({
-                      ...f,
-                      son_kullanma_tarihi: e.target.value,
-                    }))
-                  }
-                />
-              </div>
-              {/* Notlar */}
-              <div>
-                <label className="block mb-1 text-slate-600 font-medium">
-                  Notlar
-                </label>
-                <textarea
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2 outline-none resize-y focus:ring-2 focus:ring-blue-200"
-                  value={form.notlar}
-                  rows={2}
-                  onChange={(e) =>
-                    setForm((f) => ({
-                      ...f,
-                      notlar: e.target.value,
-                    }))
-                  }
-                />
-              </div>
+              {kategoriStats.map(([kat, stat]) => {
+                const style = KATEGORI_STYLE[kat as Kategori] ?? { bg: "bg-slate-50", text: "text-slate-600", bar: "bg-slate-400" };
+                return (
+                  <div key={kat} className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className={clsx("text-xs font-bold px-2 py-0.5 rounded-full", style.bg, style.text)}>{kat}</span>
+                        {stat.kritik > 0 && (
+                          <span className="text-xs text-rose-500 font-medium">{stat.kritik} kritik</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3 text-xs shrink-0 ml-2">
+                        <span className="text-slate-400">{stat.urunSayisi} çeşit · {stat.adet} adet</span>
+                        <span className="font-semibold text-slate-700 tabular-nums">{currency(stat.deger)}</span>
+                      </div>
+                    </div>
+                    <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                      <div
+                        className={clsx("h-full rounded-full transition-all duration-700", style.bar)}
+                        style={{ width: `${maxKategoriDeger > 0 ? (stat.deger / maxKategoriDeger) * 100 : 0}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-            <div className="flex justify-end mt-8 gap-4">
+          </div>
+        </div>
+      )}
+
+      {/* ── Inventory Table ── */}
+      <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+
+        {/* Toolbar */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 px-5 py-4 border-b border-slate-50">
+          <div className="flex items-center flex-1 max-w-xs rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 gap-2 focus-within:ring-2 focus-within:ring-blue-200">
+            <Search size={14} className="text-slate-400 shrink-0" />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Ürün ara…"
+              className="bg-transparent outline-none text-sm text-slate-700 w-full"
+            />
+            {q && (
+              <button onClick={() => setQ("")} className="text-slate-300 hover:text-slate-500">
+                <X size={13} />
+              </button>
+            )}
+          </div>
+          <div className="flex items-center rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 gap-2">
+            <Filter size={14} className="text-slate-400" />
+            <select
+              value={kategoriFilter}
+              onChange={(e) => setKategoriFilter(e.target.value as Kategori | "")}
+              className="bg-transparent outline-none text-sm text-slate-700"
+            >
+              <option value="">Tüm Kategoriler</option>
+              {KATEGORI_OPTIONS.map((k) => <option key={k} value={k}>{k}</option>)}
+            </select>
+          </div>
+          <span className="text-xs text-slate-400 sm:ml-auto shrink-0">{tableData.length} ürün</span>
+        </div>
+
+        {/* Table */}
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="text-xs text-slate-400 font-semibold uppercase tracking-wider border-b border-slate-50">
+                <th className="px-5 py-3 text-left">Ürün</th>
+                <th className="px-5 py-3 text-left">Kategori</th>
+                <th className="px-5 py-3 text-left">Stok Durumu</th>
+                <th className="px-5 py-3 text-left">Son Kul. Tarihi</th>
+                <th className="px-5 py-3 text-right">Birim Fiyat</th>
+                <th className="px-5 py-3 text-right">Toplam Değer</th>
+                <th className="px-5 py-3 text-center w-20">İşlem</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {loading ? (
+                <tr>
+                  <td colSpan={7} className="py-10 text-center text-slate-400">Yükleniyor…</td>
+                </tr>
+              ) : tableData.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="py-10 text-center text-slate-300">Kayıt bulunamadı.</td>
+                </tr>
+              ) : (
+                tableData.map((s) => {
+                  const isKritik = s.adet <= s.kritik_seviye;
+                  const style = KATEGORI_STYLE[s.kategori] ?? { bg: "bg-slate-50", text: "text-slate-600", bar: "" };
+                  return (
+                    <tr
+                      key={s.id}
+                      className={clsx("hover:bg-slate-50 transition-colors", isKritik && "bg-rose-50/40")}
+                    >
+                      <td className="px-5 py-4">
+                        <p className="font-semibold text-slate-800">{s.urun_adi}</p>
+                        {s.notlar && (
+                          <p className="text-xs text-slate-400 mt-0.5 truncate max-w-[160px]">{s.notlar}</p>
+                        )}
+                      </td>
+                      <td className="px-5 py-4">
+                        <span className={clsx("text-xs font-semibold px-2 py-0.5 rounded-full", style.bg, style.text)}>
+                          {s.kategori}
+                        </span>
+                      </td>
+                      <td className="px-5 py-4">
+                        <StockBar adet={s.adet} kritikSeviye={s.kritik_seviye} />
+                        <p className="text-[10px] text-slate-400 mt-1">min. {s.kritik_seviye}</p>
+                      </td>
+                      <td className="px-5 py-4">
+                        {s.son_kullanma_tarihi
+                          ? <ExpiryBadge date={s.son_kullanma_tarihi} />
+                          : <span className="text-slate-300 text-xs">—</span>}
+                      </td>
+                      <td className="px-5 py-4 text-right text-slate-600 tabular-nums">{currency(s.birim_fiyat)}</td>
+                      <td className="px-5 py-4 text-right font-semibold text-slate-800 tabular-nums">
+                        {currency(s.adet * s.birim_fiyat)}
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="flex items-center justify-center gap-1">
+                          <button
+                            onClick={() => openEdit(s)}
+                            className="p-1.5 text-slate-300 hover:text-blue-600 transition-colors"
+                            title="Düzenle"
+                          >
+                            <Edit2 size={15} />
+                          </button>
+                          <button
+                            onClick={() => setDeleteId(s.id)}
+                            className="p-1.5 text-slate-300 hover:text-rose-500 transition-colors"
+                            title="Sil"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Table footer */}
+        {tableData.length > 0 && (
+          <div className="px-5 py-3 border-t border-slate-50 flex justify-between text-xs text-slate-400">
+            <span>{tableData.length} ürün listeleniyor</span>
+            <span className="font-semibold text-slate-600 tabular-nums">
+              Toplam: {currency(tableData.reduce((s, k) => s + k.adet * k.birim_fiyat, 0))}
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* ── Add / Edit Modal ── */}
+      {modalOpen && (
+        <div className="fixed z-50 inset-0 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm">
+          <div className="absolute inset-0" onClick={() => setModalOpen(null)} />
+          <div className="relative z-10 w-full max-w-md mx-4">
+            <form onSubmit={handleSubmit} className="bg-white rounded-2xl shadow-2xl p-7">
               <button
                 type="button"
                 onClick={() => setModalOpen(null)}
-                className="px-4 py-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200"
+                className="absolute top-4 right-4 text-slate-300 hover:text-slate-600 transition"
               >
-                İptal
+                <X size={20} />
               </button>
-              <button
-                type="submit"
-                disabled={loading}
-                className={clsx(
-                  "px-5 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 shadow disabled:opacity-70"
-                )}
-              >
-                Kaydet
-              </button>
-            </div>
-          </form>
-        </Modal>
+              <div className="flex items-center gap-2 mb-6">
+                <Package size={20} className="text-blue-500" />
+                <h3 className="text-lg font-bold text-slate-800">
+                  {modalOpen === "yeni" ? "Yeni Ürün Ekle" : "Ürünü Düzenle"}
+                </h3>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-500 mb-1.5">Ürün Adı</label>
+                  <input
+                    required
+                    value={form.urun_adi}
+                    onChange={(e) => setForm((f) => ({ ...f, urun_adi: e.target.value }))}
+                    className="w-full px-3 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-200 text-slate-800"
+                    placeholder="ör. Botox 100U, Juvéderm Voluma…"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 mb-1.5">Kategori</label>
+                    <select
+                      value={form.kategori}
+                      onChange={(e) => setForm((f) => ({ ...f, kategori: e.target.value as Kategori }))}
+                      className="w-full px-3 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-200 text-slate-700"
+                    >
+                      {KATEGORI_OPTIONS.map((k) => <option key={k} value={k}>{k}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 mb-1.5">Birim Fiyat (₺)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.01}
+                      required
+                      value={form.birim_fiyat}
+                      onChange={(e) => setForm((f) => ({ ...f, birim_fiyat: Number(e.target.value) }))}
+                      className="w-full px-3 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-200 text-slate-700"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 mb-1.5">Mevcut Adet</label>
+                    <input
+                      type="number"
+                      min={0}
+                      required
+                      value={form.adet}
+                      onChange={(e) => setForm((f) => ({ ...f, adet: Number(e.target.value) }))}
+                      className="w-full px-3 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-200 text-slate-700"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 mb-1.5">Kritik Seviye</label>
+                    <input
+                      type="number"
+                      min={0}
+                      required
+                      value={form.kritik_seviye}
+                      onChange={(e) => setForm((f) => ({ ...f, kritik_seviye: Number(e.target.value) }))}
+                      className="w-full px-3 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-200 text-slate-700"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-500 mb-1.5">Son Kullanma Tarihi (SKT)</label>
+                  <input
+                    type="date"
+                    value={form.son_kullanma_tarihi}
+                    onChange={(e) => setForm((f) => ({ ...f, son_kullanma_tarihi: e.target.value }))}
+                    className="w-full px-3 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-200 text-slate-700"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-500 mb-1.5">Notlar</label>
+                  <textarea
+                    rows={2}
+                    value={form.notlar}
+                    onChange={(e) => setForm((f) => ({ ...f, notlar: e.target.value }))}
+                    className="w-full px-3 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-200 text-slate-700 resize-none"
+                    placeholder="Tedarikçi, parti no, ek bilgi…"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-3 mt-6">
+                <button
+                  type="button"
+                  onClick={() => setModalOpen(null)}
+                  className="px-4 py-2 rounded-xl bg-slate-100 text-slate-600 hover:bg-slate-200 text-sm font-medium"
+                >
+                  İptal
+                </button>
+                <button
+                  type="submit"
+                  disabled={formLoading}
+                  className="px-5 py-2 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 shadow transition disabled:opacity-70"
+                >
+                  {formLoading ? "Kaydediliyor…" : "Kaydet"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
 
-      {/* --- Silme Onayı Modal --- */}
+      {/* ── Delete Confirm Modal ── */}
       {deleteId && (
-        <Modal onClose={() => setDeleteId(null)}>
-          <div className="bg-white rounded-xl p-8 max-w-md shadow-xl w-full">
-            <div className="flex items-center gap-2 text-lg font-semibold mb-3">
-              <Trash2 className="text-rose-500" />
-              Ürünü Sil
+        <div className="fixed z-50 inset-0 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm">
+          <div className="absolute inset-0" onClick={() => setDeleteId(null)} />
+          <div className="relative z-10 w-full max-w-sm mx-4 bg-white rounded-2xl shadow-2xl p-7">
+            <div className="flex items-center gap-2 mb-4">
+              <Trash2 size={18} className="text-rose-500" />
+              <h3 className="text-base font-bold text-slate-800">Ürünü Sil</h3>
             </div>
-            <div className="text-slate-700 mb-8">
-              Seçilen ürünü silmek istediğinize emin misiniz?
-            </div>
-            <div className="flex justify-end gap-4">
+            <p className="text-sm text-slate-600 mb-6">Bu ürünü kalıcı olarak silmek istediğinize emin misiniz?</p>
+            <div className="flex justify-end gap-3">
               <button
                 onClick={() => setDeleteId(null)}
-                className="px-4 py-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200"
+                className="px-4 py-2 rounded-xl bg-slate-100 text-slate-600 hover:bg-slate-200 text-sm font-medium"
               >
                 İptal
               </button>
               <button
                 onClick={() => handleDelete(deleteId)}
                 disabled={deleteLoading}
-                className="px-5 py-2 rounded-lg bg-rose-600 text-white font-semibold hover:bg-rose-700 shadow disabled:opacity-70"
+                className="px-5 py-2 rounded-xl bg-rose-600 text-white text-sm font-semibold hover:bg-rose-700 shadow disabled:opacity-70"
               >
-                Sil
+                {deleteLoading ? "Siliniyor…" : "Sil"}
               </button>
             </div>
           </div>
-        </Modal>
-      )}
-    </div>
-  );
-}
-
-// --- KPI Card ---
-function KpiCard({
-  icon,
-  title,
-  value,
-  borderColor,
-  bgColor,
-  highlight,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  value: React.ReactNode;
-  borderColor: string;
-  bgColor: string;
-  highlight?: "rose";
-}) {
-  return (
-    <div
-      className={clsx(
-        "flex items-center gap-4 p-5 rounded-xl border shadow-sm",
-        borderColor,
-        bgColor,
-        highlight === "rose" && "animate-pulse"
-      )}
-    >
-      <div className="p-3 bg-white rounded-full shadow-inner">{icon}</div>
-      <div>
-        <div className="text-slate-700 text-base font-medium">{title}</div>
-        <div
-          className={clsx(
-            "text-2xl md:text-3xl font-extrabold",
-            highlight === "rose" ? "text-rose-600" : "text-blue-700"
-          )}
-        >
-          {value}
         </div>
-      </div>
-    </div>
-  );
-}
-
-// --- Basic Modal ---
-function Modal({
-  children,
-  onClose,
-}: {
-  children: React.ReactNode;
-  onClose: () => void;
-}) {
-  React.useEffect(() => {
-    function handleEsc(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", handleEsc);
-    return () => window.removeEventListener("keydown", handleEsc);
-  }, [onClose]);
-
-  return (
-    <div className="fixed z-50 inset-0 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm">
-      <div className="absolute inset-0" onClick={onClose} />
-      <div className="relative z-10">
-        <button
-          onClick={onClose}
-          className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 bg-white rounded-full p-1.5"
-          tabIndex={-1}
-        >
-          <X size={20} />
-        </button>
-        {children}
-      </div>
+      )}
     </div>
   );
 }
