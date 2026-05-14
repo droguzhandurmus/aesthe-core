@@ -457,7 +457,7 @@ function Modal({
   }, [onClose]);
 
   return (
-    <div className="fixed z-50 inset-0 flex items-center justify-center bg-slate-900/50">
+    <div className="fixed z-50 inset-0 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm">
       <div className="absolute inset-0" onClick={onClose} />
       <div className="relative z-10">
         <button

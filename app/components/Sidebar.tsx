@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -13,16 +13,15 @@ import {
   UserPlus,
   FileText,
   Camera,
-  BarChart3,
   PieChart,
-  Banknote,
-  MessageSquareQuote,
   Gift,
   Settings,
   Package,
   Wallet,
-  MessageSquare, // Yeni ikon: Yorumlar için eklendi
-  Building2, // Eklendi: Klinik Ayarları için
+  MessageSquare,
+  Building2,
+  LogOut,
+  Inbox,
 } from "lucide-react";
 
 // HREF'ler güncellendi!
@@ -40,6 +39,7 @@ const menuGroups = [
     items: [
       { name: "Hasta Listesi", icon: Users, href: "/hastalar/hasta-listesi" },
       { name: "Yeni Hasta", icon: UserPlus, href: "/hastalar/yeni-hasta" },
+      { name: "Bekleyen Başvurular", icon: Inbox, href: "/hastalar/bekleyen-basvurular" },
     ],
   },
   {
@@ -77,7 +77,7 @@ const menuGroups = [
   },
 ];
 
-export default function Sidebar() {
+export default function Sidebar({ onSignOut }: { onSignOut?: () => void }) {
   // Başlangıçta tüm gruplar açık olsun
   const [openGroups, setOpenGroups] = useState<string[]>(
     menuGroups.map((g) => g.heading)
@@ -98,11 +98,12 @@ export default function Sidebar() {
       {/* HEADER & PROFIL ALANI */}
       <div className="p-6 pb-2">
         {/* Logo */}
-        <h1 className="text-2xl font-bold tracking-tight mb-6 select-none flex items-center">
-          <span className="text-blue-900">Estetik</span>
-          <span className="mx-1" /> {/* Boşluk ekle */}
-          <span className="text-blue-600">Asistan</span>
-        </h1>
+        <div className="flex items-center gap-2 mb-6 select-none">
+          <img src="/aesthecore-logo.PNG" alt="AestheCore" className="w-12 h-12 object-contain" />
+          <h1 style={{ fontFamily: "var(--font-raleway)" }} className="text-xl font-bold tracking-tight leading-none">
+            <span className="text-[#7096BE]">Aesthe</span><span className="text-[#1C3557]">Core</span>
+          </h1>
+        </div>
 
         {/* Profil Kartı */}
         <div className="flex items-center gap-3 p-3 rounded-lg bg-white border border-slate-100 mb-4">
@@ -115,6 +116,20 @@ export default function Sidebar() {
           </div>
         </div>
       </div>
+
+      {/* ÇIKIŞ BUTONU */}
+      {onSignOut && (
+        <div className="px-4 pb-2">
+          <button
+            onClick={onSignOut}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-500 hover:bg-red-50 hover:text-red-600 transition-colors"
+            type="button"
+          >
+            <LogOut size={16} />
+            Çıkış Yap
+          </button>
+        </div>
+      )}
 
       {/* MENÜ (SCROLL EDİLEBİLİR) */}
       <div className="flex-1 overflow-y-auto px-4 pb-6 scrollbar-thin scrollbar-thumb-slate-200">

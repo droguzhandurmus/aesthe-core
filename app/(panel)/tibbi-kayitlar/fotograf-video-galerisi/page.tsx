@@ -86,7 +86,7 @@ function showToast(msg: string, type: "error" | "success" = "success") {
     toast.textContent = msg;
     toast.className =
       "fixed z-[1000] left-1/2 top-6 -translate-x-1/2 px-4 py-2 rounded shadow font-semibold text-white transition bg-" +
-      (type === "error" ? "[#ef4444]" : "[#357ded]");
+      (type === "error" ? "[#ef4444]" : "[#4A6E95]");
     toast.style.opacity = "1";
     (window as any)._medya_toast_timer = setTimeout(() => {
       if (toast) toast.style.opacity = "0";
@@ -110,7 +110,7 @@ function Modal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div
-        className="fixed inset-0 bg-black/50"
+        className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm"
         onClick={onClose}
         aria-label="Modal kapat arka"
       />
@@ -652,7 +652,7 @@ export default function MedyaGalerisiPage() {
       <div className="flex min-h-screen bg-white">
         {/* --------------- SOL PANEL (Filtreler) -------------- */}
         <aside className="w-full sm:w-72 md:w-80 px-6 py-9 border-r border-slate-200 flex-shrink-0 bg-gradient-to-b from-slate-50 via-white to-slate-100 sticky top-0 h-screen overflow-y-auto z-[40]">
-          <h2 className="text-2xl font-bold mb-4 text-[#357ded] flex items-center gap-2">
+          <h2 className="text-2xl font-bold mb-4 text-[#4A6E95] flex items-center gap-2">
             <IconImage className="mr-2" /> Fotoğraf & Video Galerisi
           </h2>
           <div className="mb-5">
@@ -725,8 +725,8 @@ export default function MedyaGalerisiPage() {
                   type="button"
                   className={`rounded px-3 py-1 text-sm font-semibold transition ${
                     selectedMediaType === opt.value
-                      ? "bg-[#357ded] text-white shadow"
-                      : "bg-slate-100 text-[#357ded] hover:bg-blue-50"
+                      ? "bg-[#4A6E95] text-white shadow"
+                      : "bg-slate-100 text-[#4A6E95] hover:bg-blue-50"
                   }`}
                   onClick={() => setSelectedMediaType(opt.value)}
                 >
@@ -740,7 +740,7 @@ export default function MedyaGalerisiPage() {
         <main className="flex-1 flex flex-col px-2 md:px-10 py-10 min-w-0">
           <div className="flex items-center justify-end mb-7">
             <button
-              className="flex gap-2 items-center rounded-md shadow px-5 py-2 font-semibold text-md bg-[#357ded] text-white hover:bg-[#2456b0]"
+              className="flex gap-2 items-center rounded-md shadow px-5 py-2 font-semibold text-md bg-[#4A6E95] text-white hover:bg-[#3A5878]"
               onClick={() => setUploadModalOpen(true)}
             >
               <IconUpload className="w-5 h-5" /> + Medya Yükle
@@ -812,7 +812,7 @@ export default function MedyaGalerisiPage() {
                     {/* Bilgi */}
                     <div className="flex items-center justify-between mt-2">
                       <div>
-                        <span className="text-sm text-[#357ded] font-semibold">
+                        <span className="text-sm text-[#4A6E95] font-semibold">
                           {m.hasta?.ad} {m.hasta?.soyad}
                         </span>
                         <span className="ml-2 text-xs rounded px-2 py-0.5 bg-blue-100 text-blue-900">{m.kategori}</span>
@@ -849,7 +849,7 @@ export default function MedyaGalerisiPage() {
           >
             {/* Başlık & kapat */}
             <div className="flex items-center mb-2">
-              <IconUpload className="text-[#357ded] mr-2" />
+              <IconUpload className="text-[#4A6E95] mr-2" />
               <div className="font-semibold text-2xl flex-1">Medya Yükle</div>
               <button
                 onClick={() => { setUploadModalOpen(false); resetForm(); }}
@@ -870,11 +870,11 @@ export default function MedyaGalerisiPage() {
             >
               {uploadFiles.length === 0 ? (
                 <>
-                  <IconUpload className="w-10 h-10 text-[#357ded] mb-1" />
+                  <IconUpload className="w-10 h-10 text-[#4A6E95] mb-1" />
                   <span className="text-gray-500 mb-1 text-center text-base">
                     Sürükleyip medya dosyalarını bırakın
                   </span>
-                  <label className="cursor-pointer text-[#357ded] hover:underline font-semibold">
+                  <label className="cursor-pointer text-[#4A6E95] hover:underline font-semibold">
                     veya tıklayarak dosya seç
                     <input
                       className="sr-only"
@@ -903,7 +903,7 @@ export default function MedyaGalerisiPage() {
                   ))}
                   <button
                     type="button"
-                    className="ml-2 text-xs px-2 text-[#357ded] underline"
+                    className="ml-2 text-xs px-2 text-[#4A6E95] underline"
                     onClick={() => setUploadFiles([])}
                     disabled={uploading}
                   >
@@ -933,7 +933,7 @@ export default function MedyaGalerisiPage() {
                     <span className="text-gray-400 italic">Son işlem aranıyor...</span>
                   ) : lastAppointment ? (
                     <span
-                      className="text-[#357ded] underline cursor-pointer"
+                      className="text-[#4A6E95] underline cursor-pointer"
                       title="Son işlemin tarihini uygula"
                       onClick={() =>
                         setFormData(fd => ({
@@ -1080,7 +1080,7 @@ export default function MedyaGalerisiPage() {
             <div className="flex justify-end gap-3 mt-5">
               <button
                 type="button"
-                className="border border-gray-300 rounded px-6 py-2 bg-white text-[#357ded] hover:bg-gray-100 transition font-semibold"
+                className="border border-gray-300 rounded px-6 py-2 bg-white text-[#4A6E95] hover:bg-gray-100 transition font-semibold"
                 onClick={() => {
                   setUploadModalOpen(false);
                   resetForm();
@@ -1091,7 +1091,7 @@ export default function MedyaGalerisiPage() {
               </button>
               <button
                 type="submit"
-                className="bg-[#357ded] text-white rounded px-6 py-2 font-semibold text-base transition hover:bg-[#2456b0]"
+                className="bg-[#4A6E95] text-white rounded px-6 py-2 font-semibold text-base transition hover:bg-[#3A5878]"
                 disabled={
                   uploading ||
                   !formData.hasta_id ||
@@ -1113,7 +1113,7 @@ export default function MedyaGalerisiPage() {
             <div className="bg-[#f6fafd] rounded-xl w-[95vw] max-w-2xl overflow-hidden">
               <div className="flex items-center justify-between px-6 py-3">
                 <div className="flex items-center gap-2">
-                  <span className="font-semibold text-[#357ded] text-base">
+                  <span className="font-semibold text-[#4A6E95] text-base">
                     {imageModal.media.hasta?.ad} {imageModal.media.hasta?.soyad}
                   </span>
                   {imageModal.media.notlar?.asama && (

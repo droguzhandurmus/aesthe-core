@@ -2,7 +2,7 @@
 
 :root {
   --background: #ffffff;
-  --foreground: #171717;
+  --foreground: #1C3557;
 }
 
 @theme inline {
@@ -12,11 +12,17 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+@theme {
+  --color-blue-50:  #EFF4F9;
+  --color-blue-100: #D8E6F0;
+  --color-blue-200: #B8CEE3;
+  --color-blue-300: #93B3D3;
+  --color-blue-400: #7096BE;
+  --color-blue-500: #5B82AA;
+  --color-blue-600: #4A6E95;
+  --color-blue-700: #3A5878;
+  --color-blue-800: #28425C;
+  --color-blue-900: #1C3557;
 }
 
 body {
