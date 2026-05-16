@@ -95,14 +95,18 @@ function computeGridLayout(widgetList: WidgetCfg[], containerW: number): Record<
   return result;
 }
 
-// Given ghost center (cx, cy), find the best insertion index among `others`
+// Given ghost center (cx, cy), find the best insertion index among `others`.
+// defaultIdx = current position of dragged in the list (kept when ghost is in dead zone).
+// Symmetric dead zone (±DEAD) prevents oscillation near boundaries in both directions.
 function computeInsertOrder(
   cx: number, cy: number,
   dragged: WidgetCfg,
   others: WidgetCfg[],
   othersLayout: Record<string, WidgetPos>,
+  defaultIdx: number,
 ): WidgetCfg[] {
-  let bestIdx = others.length;
+  const DEAD = 0.28; // ±28 % of widget dimension before a swap triggers
+  let bestIdx = defaultIdx;
   let bestDist = Infinity;
 
   others.forEach((w, i) => {
@@ -113,10 +117,11 @@ function computeInsertOrder(
     const dist = Math.hypot(cx - wcx, cy - wcy);
     if (dist < bestDist) {
       bestDist = dist;
-      // vertical bias: if ghost is clearly above/below the widget centre use that
-      if (cy < wcy - p.h * 0.25)      bestIdx = i;       // insert before
-      else if (cy > wcy + p.h * 0.25) bestIdx = i + 1;   // insert after
-      else                             bestIdx = cx < wcx ? i : i + 1;
+      if      (cy < wcy - p.h * DEAD) bestIdx = i;
+      else if (cy > wcy + p.h * DEAD) bestIdx = i + 1;
+      else if (cx < wcx - p.w * DEAD) bestIdx = i;
+      else if (cx > wcx + p.w * DEAD) bestIdx = i + 1;
+      // inside dead zone → keep defaultIdx (no change)
     }
   });
 
@@ -460,16 +465,9 @@ export default function DashboardPage() {
   const containerWRef = useRef(containerW);
   useEffect(() => { containerWRef.current = containerW; }, [containerW]);
 
-  // Stable reference layout — set once at drag start, never updated during drag.
-  // Using this (instead of the live-reordered previewRef) eliminates the feedback
-  // loop that caused faster-seeming animation in one direction.
-  const refOthersRef = useRef<WidgetCfg[]>([]);
-  const refOthersLayoutRef = useRef<Record<string, WidgetPos>>({});
 
-  // ── Resize state ──────────────────────────────────────────────────────────────
-  const [resizePreview, setResizePreview] = useState<{ id: string; cols: 1|2|4; rows: 1|2 } | null>(null);
-  const resizePreviewRef = useRef(resizePreview);
-  useEffect(() => { resizePreviewRef.current = resizePreview; }, [resizePreview]);
+  // ── Resize indicator (tooltip only — layout unchanged until pointer up) ────────
+  const [resizeHint, setResizeHint] = useState<{ cols: 1|2|4; rows: 1|2; x: number; y: number } | null>(null);
 
   // ── Persist/load ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -566,13 +564,10 @@ export default function DashboardPage() {
   };
 
   // ── Layout computation ────────────────────────────────────────────────────────
-  // While dragging, use previewWidgets; otherwise use widgets.
-  // resizePreview temporarily overrides a widget's cols/rows.
-  const effectiveWidgets = useMemo(() => {
-    const base = isDragging ? previewWidgets : widgets;
-    if (!resizePreview) return base;
-    return base.map(w => w.id === resizePreview.id ? { ...w, cols: resizePreview.cols, rows: resizePreview.rows } : w);
-  }, [isDragging, previewWidgets, widgets, resizePreview]);
+  const effectiveWidgets = useMemo(
+    () => isDragging ? previewWidgets : widgets,
+    [isDragging, previewWidgets, widgets],
+  );
 
   const layout = useMemo(() => computeGridLayout(effectiveWidgets, containerW), [effectiveWidgets, containerW]);
 
@@ -613,35 +608,29 @@ export default function DashboardPage() {
         const initPreview = [...widgets];
         setPreviewWidgets(initPreview);
         previewRef.current = initPreview;
-        // Freeze stable reference — never updated during this drag session
-        const id = pointerDownRef.current.id;
-        const originalOthers = widgets.filter(w => w.id !== id);
-        refOthersRef.current = originalOthers;
-        refOthersLayoutRef.current = computeGridLayout(originalOthers, containerWRef.current);
       } else return;
     }
 
     if (!isDragging || !dragInfoRef.current) return;
     const { id, offsetX, offsetY } = dragInfoRef.current;
 
-    // Ghost position
     const ghostX = cx - offsetX;
     const ghostY = cy - offsetY;
     setGhostPos({ x: ghostX, y: ghostY });
 
-    // Ghost centre — use original dragged widget dimensions
-    const dragged = widgets.find(w => w.id === id);
+    const dragged = previewRef.current.find(w => w.id === id);
     if (!dragged) return;
     const cw = containerWRef.current;
     const colW = (cw - 3 * GAP) / 4;
-    const ghostW = dragged.cols * colW + (dragged.cols - 1) * GAP;
-    const ghostH = dragged.rows * ROW_H + (dragged.rows - 1) * GAP;
-    const ghostCX = ghostX + ghostW / 2;
-    const ghostCY = ghostY + ghostH / 2;
+    const ghostCX = ghostX + dragged.cols * colW / 2 + (dragged.cols - 1) * GAP / 2;
+    const ghostCY = ghostY + dragged.rows * ROW_H / 2 + (dragged.rows - 1) * GAP / 2;
 
-    // Insert order is always computed against the frozen reference layout so
-    // each direction behaves identically (no feedback loop from reordered positions).
-    const newPreview = computeInsertOrder(ghostCX, ghostCY, dragged, refOthersRef.current, refOthersLayoutRef.current);
+    // Use current preview positions (not frozen) with a ±28% dead zone to prevent
+    // oscillation. The dead zone gives equal sensitivity in every direction.
+    const dragIdx = previewRef.current.findIndex(w => w.id === id);
+    const others = previewRef.current.filter(w => w.id !== id);
+    const othersLayout = computeGridLayout(others, cw);
+    const newPreview = computeInsertOrder(ghostCX, ghostCY, dragged, others, othersLayout, dragIdx);
     previewRef.current = newPreview;
     setPreviewWidgets([...newPreview]);
   };
@@ -697,10 +686,9 @@ export default function DashboardPage() {
       const wRect = wEl?.getBoundingClientRect();
       const deltaY = wRect ? me.clientY - wRect.bottom : 0;
       const newRows = rowSnap(deltaY, preview.rows);
-      if (newCols !== preview.cols || newRows !== preview.rows) {
-        preview = { cols: newCols, rows: newRows };
-        setResizePreview({ id: widgetId, ...preview });
-      }
+      preview = { cols: newCols, rows: newRows };
+      // Show tooltip only — layout stays unchanged until release
+      setResizeHint({ cols: newCols, rows: newRows, x: me.clientX, y: me.clientY });
     };
     const onUp = () => {
       document.removeEventListener("pointermove", onMove);
@@ -710,7 +698,7 @@ export default function DashboardPage() {
         localStorage.setItem("aesthecore_dashboard_v2", JSON.stringify(next));
         return next;
       });
-      setResizePreview(null);
+      setResizeHint(null);
     };
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onUp);
@@ -870,6 +858,21 @@ export default function DashboardPage() {
 
         {showAdd && <AddWidgetPanel widgets={widgets} onAdd={addWidget} onClose={() => setShowAdd(false)} />}
       </div>
+
+      {/* Resize tooltip — fixed so it floats above everything */}
+      {resizeHint && (
+        <div
+          className="fixed z-[100] pointer-events-none select-none"
+          style={{ left: resizeHint.x + 14, top: resizeHint.y + 14 }}
+        >
+          <div className="bg-slate-900 text-white text-sm font-bold px-3 py-1.5 rounded-xl shadow-2xl flex items-center gap-1.5">
+            <span>{resizeHint.cols}</span>
+            <span className="text-slate-400 text-xs">×</span>
+            <span>{resizeHint.rows}</span>
+            <span className="text-slate-400 text-xs ml-1">sütun × satır</span>
+          </div>
+        </div>
+      )}
     </>
   );
 }
