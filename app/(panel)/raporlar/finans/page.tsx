@@ -38,6 +38,8 @@ interface FinansForm {
   aciklama: string;
   tutar: number;
   tarih: string;
+  hasta_adi?: string;
+  islem_adi?: string;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -193,18 +195,24 @@ export default function FinansPage() {
 
   // ── Actions ────────────────────────────────────────────────────────────────
   function openModal(tip: HareketTipi) {
-    setForm({ tip, kategori: "", aciklama: "", tutar: 0, tarih: new Date().toISOString().slice(0, 10) });
+    setForm({ tip, kategori: "", aciklama: "", tutar: 0, tarih: new Date().toISOString().slice(0, 10), hasta_adi: "", islem_adi: "" });
     setModalOpen(tip);
   }
 
   async function handleFormSave(e: React.FormEvent) {
     e.preventDefault();
     setKaydetLoading(true);
-    const { error } = await supabase.from("finans").insert([{ ...form, tutar: Number(form.tutar) }]);
+    const builtAciklama = form.tip === "Gelir" && (form.hasta_adi || form.islem_adi)
+      ? [form.hasta_adi, form.islem_adi, form.aciklama].filter(Boolean).join(" — ")
+      : form.aciklama;
+    const { error } = await supabase.from("finans").insert([{
+      tip: form.tip, kategori: form.kategori, aciklama: builtAciklama,
+      tutar: Number(form.tutar), tarih: form.tarih,
+    }]);
     setKaydetLoading(false);
     if (!error) {
       setModalOpen(null);
-      setForm({ tip: "Gelir", kategori: "", aciklama: "", tutar: 0, tarih: new Date().toISOString().slice(0, 10) });
+      setForm({ tip: "Gelir", kategori: "", aciklama: "", tutar: 0, tarih: new Date().toISOString().slice(0, 10), hasta_adi: "", islem_adi: "" });
       fetchFinans();
     }
   }
@@ -594,14 +602,40 @@ export default function FinansPage() {
                   ))}
                 </select>
               </div>
+
+              {/* Gelir'e özgü hasta bilgileri */}
+              {modalOpen === "Gelir" && (
+                <div className="space-y-3 bg-emerald-50 border border-emerald-100 rounded-xl p-3">
+                  <p className="text-[11px] font-semibold text-emerald-700 uppercase tracking-wider">Hasta Bilgileri (opsiyonel)</p>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 mb-1.5">Hasta Adı</label>
+                    <input
+                      value={form.hasta_adi ?? ""}
+                      onChange={(e) => setForm((f) => ({ ...f, hasta_adi: e.target.value }))}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-300 text-slate-700 text-sm bg-white"
+                      placeholder="Örn: Ayşe Kaya"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 mb-1.5">İşlem Adı</label>
+                    <input
+                      value={form.islem_adi ?? ""}
+                      onChange={(e) => setForm((f) => ({ ...f, islem_adi: e.target.value }))}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-300 text-slate-700 text-sm bg-white"
+                      placeholder="Örn: Rinoplasti, Botoks..."
+                    />
+                  </div>
+                </div>
+              )}
+
               <div>
-                <label className="block text-xs font-semibold text-slate-500 mb-1.5">Açıklama</label>
+                <label className="block text-xs font-semibold text-slate-500 mb-1.5">Açıklama / Not</label>
                 <input
                   value={form.aciklama}
                   onChange={(e) => setForm((f) => ({ ...f, aciklama: e.target.value }))}
                   className="w-full px-3 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-blue-200 text-slate-700"
                   placeholder="Opsiyonel"
-                  maxLength={80}
+                  maxLength={120}
                 />
               </div>
               <div>

@@ -544,13 +544,29 @@ function FotograflarTab({ hastaId }: { hastaId: string }) {
 
 // ─── Ödeme Takibi Paneli ──────────────────────────────────────────────────────
 
-function OdemeTakibiPanel({ hastaId, durum, onDurumChange }: {
-  hastaId: string; durum: string | null; onDurumChange: (d: string) => void;
+const GELIR_KATEGORILERI = ["Hizmet Bedeli", "Ürün Satışı", "Danışmanlık", "Diğer"];
+
+function OdemeTakibiPanel({ hastaId, hastaAdi, hastaIslem, durum, onDurumChange }: {
+  hastaId: string; hastaAdi: string; hastaIslem: string | null;
+  durum: string | null; onDurumChange: (d: string) => void;
 }) {
+  type PanelTab = "notlar" | "odeme";
+  const [panelTab, setPanelTab] = useState<PanelTab>("notlar");
   const [notlar, setNotlar] = useState<{ id: string; tarih: string; notlar: string | null }[]>([]);
   const [loading, setLoading] = useState(true);
   const [yeniNot, setYeniNot] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [notSaving, setNotSaving] = useState(false);
+
+  // Ödeme formu
+  const [odemeForm, setOdemeForm] = useState({
+    tutar: 0,
+    kategori: "Hizmet Bedeli",
+    islem_adi: hastaIslem ?? "",
+    tarih: new Date().toISOString().slice(0, 10),
+    aciklama: "",
+  });
+  const [odemeSaving, setOdemeSaving] = useState(false);
+  const [odemeSuccess, setOdemeSuccess] = useState(false);
 
   const fetchNotlar = useCallback(async () => {
     setLoading(true);
@@ -564,27 +580,63 @@ function OdemeTakibiPanel({ hastaId, durum, onDurumChange }: {
 
   useEffect(() => { fetchNotlar(); }, [fetchNotlar]);
 
-  async function handleAdd() {
+  async function handleAddNot() {
     if (!yeniNot.trim()) return;
-    setSaving(true);
+    setNotSaving(true);
     await supabase.from("ameliyat_notlari").insert({
       hasta_id: hastaId, islem_adi: "Ödeme Notu",
       tarih: new Date().toISOString(),
       notlar: yeniNot.trim(), hekim: null,
     });
-    setYeniNot(""); setSaving(false); fetchNotlar();
+    setYeniNot(""); setNotSaving(false); fetchNotlar();
   }
 
-  async function handleDelete(id: string) {
+  async function handleDeleteNot(id: string) {
     await supabase.from("ameliyat_notlari").delete().eq("id", id);
     setNotlar(prev => prev.filter(n => n.id !== id));
   }
 
+  async function handleOdemeKaydet() {
+    if (!odemeForm.tutar || odemeForm.tutar <= 0) return;
+    setOdemeSaving(true);
+    const aciklamaStr = [hastaAdi, odemeForm.islem_adi, odemeForm.aciklama].filter(Boolean).join(" — ");
+    await supabase.from("finans").insert({
+      tip: "Gelir",
+      kategori: odemeForm.kategori,
+      aciklama: aciklamaStr,
+      tutar: odemeForm.tutar,
+      tarih: odemeForm.tarih,
+    });
+    setOdemeSaving(false);
+    setOdemeSuccess(true);
+    setOdemeForm(f => ({ ...f, tutar: 0, aciklama: "" }));
+    setTimeout(() => setOdemeSuccess(false), 3000);
+  }
+
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-      <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/60 flex items-center gap-2">
-        <Wallet size={14} className="text-slate-400" />
-        <h3 className="text-sm font-semibold text-slate-700">Ödeme Takibi</h3>
+      <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/60 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Wallet size={14} className="text-slate-400" />
+          <h3 className="text-sm font-semibold text-slate-700">Ödeme Takibi</h3>
+        </div>
+        <div className="flex bg-white border border-slate-200 rounded-lg p-0.5 gap-0.5">
+          {([
+            { key: "notlar" as PanelTab, label: "Notlar" },
+            { key: "odeme" as PanelTab, label: "Gelir Kaydı" },
+          ]).map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => setPanelTab(key)}
+              className={clsx(
+                "px-2.5 py-1 text-xs font-semibold rounded-md transition-all",
+                panelTab === key ? "bg-blue-600 text-white shadow-sm" : "text-slate-500 hover:text-slate-700"
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Ödeme Durumu */}
@@ -609,49 +661,125 @@ function OdemeTakibiPanel({ hastaId, durum, onDurumChange }: {
         </div>
       </div>
 
-      {/* Not Ekle */}
-      <div className="px-4 py-3 border-b border-slate-100">
-        <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold mb-2">Ödeme Notu Ekle</p>
-        <textarea value={yeniNot} onChange={e => setYeniNot(e.target.value)} rows={2}
-          placeholder="Ör: Kapora alındı, bakiye Mayıs'ta..."
-          onKeyDown={e => { if (e.key === "Enter" && e.ctrlKey) handleAdd(); }}
-          className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none" />
-        <button onClick={handleAdd} disabled={saving || !yeniNot.trim()}
-          className="mt-2 w-full flex items-center justify-center gap-1.5 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-semibold hover:bg-blue-700 transition disabled:opacity-40">
-          {saving ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />} Notu Kaydet
-        </button>
-      </div>
-
-      {/* Notlar Listesi */}
-      <div className="max-h-64 overflow-y-auto">
-        {loading ? (
-          <div className="flex items-center justify-center py-6">
-            <Loader2 size={16} className="animate-spin text-slate-300" />
+      {/* NOTLAR TAB */}
+      {panelTab === "notlar" && (
+        <>
+          <div className="px-4 py-3 border-b border-slate-100">
+            <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold mb-2">Ödeme Notu Ekle</p>
+            <textarea value={yeniNot} onChange={e => setYeniNot(e.target.value)} rows={2}
+              placeholder="Ör: Kapora alındı, bakiye Mayıs'ta..."
+              onKeyDown={e => { if (e.key === "Enter" && e.ctrlKey) handleAddNot(); }}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none" />
+            <button onClick={handleAddNot} disabled={notSaving || !yeniNot.trim()}
+              className="mt-2 w-full flex items-center justify-center gap-1.5 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-semibold hover:bg-blue-700 transition disabled:opacity-40">
+              {notSaving ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />} Notu Kaydet
+            </button>
           </div>
-        ) : notlar.length === 0 ? (
-          <div className="text-center py-6 text-slate-400">
-            <Wallet size={22} className="mx-auto mb-2 opacity-20" />
-            <p className="text-xs">Henüz ödeme notu yok</p>
-          </div>
-        ) : (
-          <div className="divide-y divide-slate-50">
-            {notlar.map(n => (
-              <div key={n.id} className="flex items-start gap-2 px-4 py-3 group hover:bg-slate-50 transition">
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs text-slate-700 leading-relaxed">{n.notlar}</p>
-                  <p className="text-[10px] text-slate-400 mt-0.5">
-                    {new Date(n.tarih).toLocaleDateString("tr-TR", { day: "numeric", month: "short", year: "numeric" })}
-                  </p>
-                </div>
-                <button onClick={() => handleDelete(n.id)}
-                  className="shrink-0 p-1 text-slate-300 hover:text-red-500 rounded transition opacity-0 group-hover:opacity-100">
-                  <Trash2 size={11} />
-                </button>
+          <div className="max-h-48 overflow-y-auto">
+            {loading ? (
+              <div className="flex items-center justify-center py-6">
+                <Loader2 size={16} className="animate-spin text-slate-300" />
               </div>
-            ))}
+            ) : notlar.length === 0 ? (
+              <div className="text-center py-6 text-slate-400">
+                <Wallet size={22} className="mx-auto mb-2 opacity-20" />
+                <p className="text-xs">Henüz ödeme notu yok</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-50">
+                {notlar.map(n => (
+                  <div key={n.id} className="flex items-start gap-2 px-4 py-3 group hover:bg-slate-50 transition">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-slate-700 leading-relaxed">{n.notlar}</p>
+                      <p className="text-[10px] text-slate-400 mt-0.5">
+                        {new Date(n.tarih).toLocaleDateString("tr-TR", { day: "numeric", month: "short", year: "numeric" })}
+                      </p>
+                    </div>
+                    <button onClick={() => handleDeleteNot(n.id)}
+                      className="shrink-0 p-1 text-slate-300 hover:text-red-500 rounded transition opacity-0 group-hover:opacity-100">
+                      <Trash2 size={11} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </>
+      )}
+
+      {/* GELİR KAYDI TAB */}
+      {panelTab === "odeme" && (
+        <div className="px-4 py-4 space-y-3">
+          <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Finans Tablosuna Kaydet</p>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">Tutar (₺)</label>
+            <input
+              type="number"
+              min={0}
+              value={odemeForm.tutar || ""}
+              onChange={e => setOdemeForm(f => ({ ...f, tutar: Number(e.target.value) }))}
+              placeholder="0"
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-400"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">Kategori</label>
+            <select
+              value={odemeForm.kategori}
+              onChange={e => setOdemeForm(f => ({ ...f, kategori: e.target.value }))}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white"
+            >
+              {GELIR_KATEGORILERI.map(k => <option key={k}>{k}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">İşlem Adı</label>
+            <input
+              value={odemeForm.islem_adi}
+              onChange={e => setOdemeForm(f => ({ ...f, islem_adi: e.target.value }))}
+              placeholder="Rinoplasti, Botoks..."
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">Tarih</label>
+            <input
+              type="date"
+              value={odemeForm.tarih}
+              max={new Date().toISOString().slice(0, 10)}
+              onChange={e => setOdemeForm(f => ({ ...f, tarih: e.target.value }))}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">Not (opsiyonel)</label>
+            <input
+              value={odemeForm.aciklama}
+              onChange={e => setOdemeForm(f => ({ ...f, aciklama: e.target.value }))}
+              placeholder="Ör: Kapora, peşinat..."
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+            />
+          </div>
+
+          {odemeSuccess && (
+            <div className="flex items-center gap-1.5 text-emerald-600 text-xs font-medium">
+              <CheckCircle2 size={13} /> Finans tablosuna kaydedildi
+            </div>
+          )}
+
+          <button
+            onClick={handleOdemeKaydet}
+            disabled={odemeSaving || !odemeForm.tutar}
+            className="w-full flex items-center justify-center gap-1.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold transition disabled:opacity-40"
+          >
+            {odemeSaving ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />} Gelir Kaydı Ekle
+          </button>
+          <p className="text-[10px] text-slate-400 text-center">
+            Hasta adı otomatik eklenir: <span className="font-medium">{hastaAdi}</span>
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -1408,7 +1536,13 @@ export default function HastaDetayPage() {
             </div>
 
             {/* Ödeme Takibi */}
-            <OdemeTakibiPanel hastaId={hasta.id} durum={hasta.durum} onDurumChange={handleDurumChange} />
+            <OdemeTakibiPanel
+              hastaId={hasta.id}
+              hastaAdi={hasta.ad_soyad}
+              hastaIslem={hasta.islem}
+              durum={hasta.durum}
+              onDurumChange={handleDurumChange}
+            />
           </div>
 
         </div>
