@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import Link from "next/link";
 import {
   Users, Calendar, Wallet, Clock, Package, UserPlus, CreditCard,
   CalendarCheck2, Plus, X, Pencil, Check, RefreshCw, TrendingUp,
-  Zap, AlertCircle, GripVertical,
+  Zap, AlertCircle,
 } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -42,15 +42,87 @@ interface RandevuRow {
 }
 
 interface DashData {
-  toplamHasta: number;
-  odemeBekleyen: number;
-  bekleyenRandevu: number;
-  kritikStok: number;
-  randevular: RandevuRow[];
+  toplamHasta: number; odemeBekleyen: number; bekleyenRandevu: number;
+  kritikStok: number; randevular: RandevuRow[];
   gelirItems: { tarih: string; tutar: number }[];
   giderItems: { tarih: string; tutar: number }[];
   hastaCreatedAt: string[];
   sonHastalar: { id: string; ad_soyad: string; islem: string | null; created_at: string }[];
+}
+
+interface WidgetPos { x: number; y: number; w: number; h: number; }
+
+// ─── Grid Layout Engine ───────────────────────────────────────────────────────
+const GAP = 16;
+const ROW_H = 175; // single-row height in px
+
+function computeGridLayout(widgetList: WidgetCfg[], containerW: number): Record<string, WidgetPos> {
+  if (!containerW) return {};
+  const colW = (containerW - 3 * GAP) / 4;
+  const grid: boolean[][] = [];
+  const result: Record<string, WidgetPos> = {};
+
+  const ensureRows = (n: number) => {
+    while (grid.length < n) grid.push([false, false, false, false]);
+  };
+
+  const findSlot = (cols: number, rows: number): [col: number, row: number] => {
+    for (let r = 0; ; r++) {
+      ensureRows(r + rows);
+      colLoop: for (let c = 0; c <= 4 - cols; c++) {
+        for (let dr = 0; dr < rows; dr++)
+          for (let dc = 0; dc < cols; dc++)
+            if (grid[r + dr]?.[c + dc]) continue colLoop;
+        return [c, r];
+      }
+    }
+  };
+
+  for (const w of widgetList) {
+    const [c, r] = findSlot(w.cols, w.rows);
+    ensureRows(r + w.rows);
+    for (let dr = 0; dr < w.rows; dr++)
+      for (let dc = 0; dc < w.cols; dc++)
+        grid[r + dr][c + dc] = true;
+
+    result[w.id] = {
+      x: c * (colW + GAP),
+      y: r * (ROW_H + GAP),
+      w: w.cols * colW + (w.cols - 1) * GAP,
+      h: w.rows * ROW_H + (w.rows - 1) * GAP,
+    };
+  }
+  return result;
+}
+
+// Given ghost center (cx, cy), find the best insertion index among `others`
+function computeInsertOrder(
+  cx: number, cy: number,
+  dragged: WidgetCfg,
+  others: WidgetCfg[],
+  othersLayout: Record<string, WidgetPos>,
+): WidgetCfg[] {
+  let bestIdx = others.length;
+  let bestDist = Infinity;
+
+  others.forEach((w, i) => {
+    const p = othersLayout[w.id];
+    if (!p) return;
+    const wcx = p.x + p.w / 2;
+    const wcy = p.y + p.h / 2;
+    const dist = Math.hypot(cx - wcx, cy - wcy);
+    if (dist < bestDist) {
+      bestDist = dist;
+      // vertical bias: if ghost is clearly above/below the widget centre use that
+      if (cy < wcy - p.h * 0.25)      bestIdx = i;       // insert before
+      else if (cy > wcy + p.h * 0.25) bestIdx = i + 1;   // insert after
+      else                             bestIdx = cx < wcx ? i : i + 1;
+    }
+  });
+
+  const arr = [...others];
+  arr.splice(bestIdx, 0, dragged);
+  return arr;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -59,17 +131,17 @@ const DR_LABELS: Record<DateRangeKey, string> = { bugun: "Bugün", bu_hafta: "Bu
 const DATE_RANGES: DateRangeKey[] = ["bugun", "bu_hafta", "bu_ay", "bu_yil"];
 
 const CATALOG: CatalogItem[] = [
-  { type: "toplam_hasta",       label: "Toplam Hasta",    desc: "Kayıtlı hasta sayısı",       defaultCols: 1, defaultRows: 1, hasDateRange: false, color: "blue",    icon: Users },
-  { type: "randevular",         label: "Randevular",      desc: "Dönem randevu sayısı",        defaultCols: 1, defaultRows: 1, hasDateRange: true,  color: "indigo",  icon: Calendar },
-  { type: "gelir",              label: "Gelir",           desc: "Dönem geliri (₺)",            defaultCols: 1, defaultRows: 1, hasDateRange: true,  color: "emerald", icon: Wallet },
-  { type: "net_kar",            label: "Net Kâr",         desc: "Gelir eksi gider",            defaultCols: 1, defaultRows: 1, hasDateRange: true,  color: "teal",    icon: TrendingUp },
-  { type: "bekleyen_randevular",label: "Bekleyen",        desc: "Onay bekleyen randevular",    defaultCols: 1, defaultRows: 1, hasDateRange: false, color: "amber",   icon: Clock },
-  { type: "yeni_hastalar",      label: "Yeni Hasta",      desc: "Dönemde kayıt edilenler",     defaultCols: 1, defaultRows: 1, hasDateRange: true,  color: "violet",  icon: UserPlus },
-  { type: "odeme_bekleyen",     label: "Ödeme Bekleyen",  desc: "Ödenmemiş randevular",        defaultCols: 1, defaultRows: 1, hasDateRange: false, color: "rose",    icon: CreditCard },
-  { type: "kritik_stok",        label: "Kritik Stok",     desc: "Stok uyarısı olanlar",        defaultCols: 1, defaultRows: 1, hasDateRange: false, color: "orange",  icon: Package },
-  { type: "randevu_listesi",    label: "Randevu Listesi", desc: "Listeleyerek göster",         defaultCols: 4, defaultRows: 1, hasDateRange: true,  color: "blue",    icon: CalendarCheck2 },
-  { type: "son_hastalar",       label: "Son Hastalar",    desc: "En son eklenen hastalar",     defaultCols: 2, defaultRows: 1, hasDateRange: false, color: "slate",   icon: Users },
-  { type: "hizli_islemler",     label: "Hızlı İşlemler",  desc: "Kısayollar",                  defaultCols: 2, defaultRows: 1, hasDateRange: false, color: "blue",    icon: Zap },
+  { type: "toplam_hasta",        label: "Toplam Hasta",    desc: "Kayıtlı hasta sayısı",       defaultCols: 1, defaultRows: 1, hasDateRange: false, color: "blue",    icon: Users },
+  { type: "randevular",          label: "Randevular",      desc: "Dönem randevu sayısı",        defaultCols: 1, defaultRows: 1, hasDateRange: true,  color: "indigo",  icon: Calendar },
+  { type: "gelir",               label: "Gelir",           desc: "Dönem geliri (₺)",            defaultCols: 1, defaultRows: 1, hasDateRange: true,  color: "emerald", icon: Wallet },
+  { type: "net_kar",             label: "Net Kâr",         desc: "Gelir eksi gider",            defaultCols: 1, defaultRows: 1, hasDateRange: true,  color: "teal",    icon: TrendingUp },
+  { type: "bekleyen_randevular", label: "Bekleyen",        desc: "Onay bekleyen randevular",    defaultCols: 1, defaultRows: 1, hasDateRange: false, color: "amber",   icon: Clock },
+  { type: "yeni_hastalar",       label: "Yeni Hasta",      desc: "Dönemde kayıt edilenler",     defaultCols: 1, defaultRows: 1, hasDateRange: true,  color: "violet",  icon: UserPlus },
+  { type: "odeme_bekleyen",      label: "Ödeme Bekleyen",  desc: "Ödenmemiş randevular",        defaultCols: 1, defaultRows: 1, hasDateRange: false, color: "rose",    icon: CreditCard },
+  { type: "kritik_stok",         label: "Kritik Stok",     desc: "Stok uyarısı olanlar",        defaultCols: 1, defaultRows: 1, hasDateRange: false, color: "orange",  icon: Package },
+  { type: "randevu_listesi",     label: "Randevu Listesi", desc: "Listeleyerek göster",         defaultCols: 4, defaultRows: 1, hasDateRange: true,  color: "blue",    icon: CalendarCheck2 },
+  { type: "son_hastalar",        label: "Son Hastalar",    desc: "En son eklenen hastalar",     defaultCols: 2, defaultRows: 1, hasDateRange: false, color: "slate",   icon: Users },
+  { type: "hizli_islemler",      label: "Hızlı İşlemler",  desc: "Kısayollar",                  defaultCols: 2, defaultRows: 1, hasDateRange: false, color: "blue",    icon: Zap },
 ];
 
 const DEFAULT_WIDGETS: WidgetCfg[] = [
@@ -140,16 +212,14 @@ function getCatalog(type: WidgetType): CatalogItem {
 // ─── DateRange Tabs ───────────────────────────────────────────────────────────
 function DateRangeTabs({ value, onChange }: { value: DateRangeKey; onChange: (v: DateRangeKey) => void }) {
   return (
-    <div className="flex gap-0.5 bg-slate-100 rounded-lg p-0.5 shrink-0">
+    <div className="flex gap-0.5 bg-slate-100 rounded-lg p-0.5 shrink-0"
+      onPointerDown={(e) => e.stopPropagation()}>
       {DATE_RANGES.map((dr) => (
-        <button
-          key={dr}
-          title={DR_LABELS[dr]}
+        <button key={dr} title={DR_LABELS[dr]}
           onClick={(e) => { e.stopPropagation(); onChange(dr); }}
           className={`w-6 h-6 text-[10px] font-bold rounded-md transition-all ${
             value === dr ? "bg-white text-slate-700 shadow-sm" : "text-slate-400 hover:text-slate-600"
-          }`}
-        >
+          }`}>
           {DR_SHORT[dr]}
         </button>
       ))}
@@ -157,31 +227,24 @@ function DateRangeTabs({ value, onChange }: { value: DateRangeKey; onChange: (v:
   );
 }
 
-// ─── KPI Card Content ─────────────────────────────────────────────────────────
-function KpiCard({
-  cat, value, subLabel, loading, dateRange, onDateRangeChange,
-}: {
-  cat: CatalogItem;
-  value: string | number;
-  subLabel?: string;
-  loading: boolean;
-  dateRange?: DateRangeKey;
-  onDateRangeChange?: (v: DateRangeKey) => void;
+// ─── KPI Card ─────────────────────────────────────────────────────────────────
+function KpiCard({ cat, value, subLabel, loading, dateRange, onDateRangeChange }: {
+  cat: CatalogItem; value: string | number; subLabel?: string; loading: boolean;
+  dateRange?: DateRangeKey; onDateRangeChange?: (v: DateRangeKey) => void;
 }) {
   const Icon = cat.icon;
   return (
-    <div className="h-full p-4 flex flex-col">
+    <div className="h-full p-4 flex flex-col select-none">
       <div className="flex items-center gap-2 mb-3">
         <div className={`p-2 ${C_BG[cat.color]} rounded-xl shrink-0`}>
           <Icon size={16} className={C_TEXT[cat.color]} />
         </div>
         <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider truncate">{cat.label}</p>
       </div>
-      {loading ? (
-        <div className="h-7 w-16 bg-slate-100 rounded-lg animate-pulse" />
-      ) : (
-        <p className="text-2xl font-bold text-slate-800 tabular-nums leading-tight">{value}</p>
-      )}
+      {loading
+        ? <div className="h-7 w-16 bg-slate-100 rounded-lg animate-pulse" />
+        : <p className="text-2xl font-bold text-slate-800 tabular-nums leading-tight">{value}</p>
+      }
       {subLabel && <p className="text-xs text-slate-400 mt-0.5">{subLabel}</p>}
       {dateRange && onDateRangeChange && (
         <div className="mt-auto pt-3">
@@ -193,40 +256,30 @@ function KpiCard({
 }
 
 // ─── Randevu Listesi Widget ───────────────────────────────────────────────────
-function RandevuListeWidget({
-  randevular, loading, dateRange, onDateRangeChange, rows,
-}: {
-  randevular: RandevuRow[];
-  loading: boolean;
-  dateRange: DateRangeKey;
-  onDateRangeChange: (v: DateRangeKey) => void;
-  rows: number;
+function RandevuListeWidget({ randevular, loading, dateRange, onDateRangeChange, rows }: {
+  randevular: RandevuRow[]; loading: boolean; dateRange: DateRangeKey;
+  onDateRangeChange: (v: DateRangeKey) => void; rows: number;
 }) {
   const filtered = filterByRange(randevular, dateRange).sort((a, b) => a.tarih.localeCompare(b.tarih));
-  const maxItems = rows >= 2 ? 12 : 5;
-
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col select-none">
       <div className="flex items-center justify-between px-5 pt-4 pb-3 border-b border-slate-50 shrink-0">
         <div className="flex items-center gap-2">
           <CalendarCheck2 size={15} className="text-blue-500" />
           <h2 className="text-sm font-bold text-slate-800">Randevu Listesi</h2>
-          <span className="text-xs font-medium text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
-            {filtered.length} randevu
-          </span>
+          <span className="text-xs font-medium text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">{filtered.length} randevu</span>
         </div>
         <div className="flex items-center gap-3">
           <DateRangeTabs value={dateRange} onChange={onDateRangeChange} />
-          <Link href="/randevular/tum-randevular" className="text-xs text-blue-600 hover:text-blue-700 font-medium whitespace-nowrap">
+          <Link href="/randevular/tum-randevular" onPointerDown={(e) => e.stopPropagation()}
+            className="text-xs text-blue-600 hover:text-blue-700 font-medium whitespace-nowrap">
             Tümünü Gör →
           </Link>
         </div>
       </div>
       <div className="flex-1 overflow-auto">
         {loading ? (
-          <div className="p-5 space-y-3">
-            {[1, 2, 3].map((i) => <div key={i} className="h-12 bg-slate-100 rounded-xl animate-pulse" />)}
-          </div>
+          <div className="p-5 space-y-3">{[1,2,3].map(i=><div key={i} className="h-12 bg-slate-100 rounded-xl animate-pulse"/>)}</div>
         ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full min-h-[100px] text-slate-400">
             <CalendarCheck2 size={32} className="mb-2 opacity-20" />
@@ -234,24 +287,20 @@ function RandevuListeWidget({
           </div>
         ) : (
           <div className="divide-y divide-slate-50">
-            {filtered.slice(0, maxItems).map((r) => {
+            {filtered.slice(0, rows >= 2 ? 12 : 5).map((r) => {
               const raw = r.islem_turu ?? "Belirtilmedi";
-              const colonIdx = raw.indexOf(": ");
-              const islem = colonIdx !== -1 ? raw.slice(colonIdx + 2) : raw;
+              const ci = raw.indexOf(": ");
+              const islem = ci !== -1 ? raw.slice(ci + 2) : raw;
               const durum = r.durum ?? "Bekliyor";
               const time = new Date(r.tarih).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
               return (
                 <div key={r.id} className="flex items-center gap-3 px-5 py-3 hover:bg-slate-50 transition-colors">
-                  <div className="w-9 h-9 rounded-full bg-blue-100 flex items-center justify-center text-xs font-bold text-blue-700 shrink-0">
-                    {initials(r.hasta_adi)}
-                  </div>
+                  <div className="w-9 h-9 rounded-full bg-blue-100 flex items-center justify-center text-xs font-bold text-blue-700 shrink-0">{initials(r.hasta_adi)}</div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-semibold text-slate-800">{r.hasta_adi}</p>
                     <p className="text-xs text-slate-400 truncate">{islem}</p>
                   </div>
-                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full shrink-0 ${RANDEVU_DURUM_STYLE[durum] ?? "bg-slate-100 text-slate-500"}`}>
-                    {durum}
-                  </span>
+                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full shrink-0 ${RANDEVU_DURUM_STYLE[durum] ?? "bg-slate-100 text-slate-500"}`}>{durum}</span>
                   <div className="text-right shrink-0">
                     <p className="text-sm font-bold text-slate-700">{time}</p>
                     {r.sure_dk && <p className="text-xs text-slate-400">{r.sure_dk}dk</p>}
@@ -267,50 +316,43 @@ function RandevuListeWidget({
 }
 
 // ─── Son Hastalar Widget ──────────────────────────────────────────────────────
-function SonHastalarWidget({
-  hastalar, loading, rows,
-}: {
+function SonHastalarWidget({ hastalar, loading, rows }: {
   hastalar: { id: string; ad_soyad: string; islem: string | null; created_at: string }[];
-  loading: boolean;
-  rows: number;
+  loading: boolean; rows: number;
 }) {
-  const maxItems = rows >= 2 ? 8 : 4;
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col select-none">
       <div className="flex items-center justify-between px-5 pt-4 pb-3 border-b border-slate-50 shrink-0">
         <div className="flex items-center gap-2">
           <Users size={14} className="text-slate-400" />
           <h2 className="text-sm font-bold text-slate-800">Son Hastalar</h2>
         </div>
-        <Link href="/hastalar/hasta-listesi" className="text-xs text-blue-600 hover:text-blue-700 font-medium">
-          Tümü →
-        </Link>
+        <Link href="/hastalar/hasta-listesi" onPointerDown={(e) => e.stopPropagation()}
+          className="text-xs text-blue-600 hover:text-blue-700 font-medium">Tümü →</Link>
       </div>
-      {loading ? (
-        <div className="p-4 space-y-3">
-          {[1, 2, 3].map((i) => <div key={i} className="h-10 bg-slate-100 rounded-lg animate-pulse" />)}
-        </div>
-      ) : hastalar.length === 0 ? (
-        <div className="flex items-center justify-center flex-1 text-slate-400 text-sm">Henüz hasta yok</div>
-      ) : (
-        <div className="divide-y divide-slate-50 flex-1 overflow-auto">
-          {hastalar.slice(0, maxItems).map((h) => (
-            <Link key={h.id} href={`/hastalar/hasta-listesi/${h.id}`}
-              className="flex items-center gap-3 px-5 py-3 hover:bg-slate-50 transition-colors">
-              <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-xs font-bold text-blue-700 shrink-0">
-                {initials(h.ad_soyad)}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold text-slate-800 truncate">{h.ad_soyad}</p>
-                {h.islem && <p className="text-xs text-slate-400 truncate">{h.islem}</p>}
-              </div>
-              <p className="text-xs text-slate-400 shrink-0">
-                {new Date(h.created_at).toLocaleDateString("tr-TR", { day: "numeric", month: "short" })}
-              </p>
-            </Link>
-          ))}
-        </div>
-      )}
+      {loading
+        ? <div className="p-4 space-y-3">{[1,2,3].map(i=><div key={i} className="h-10 bg-slate-100 rounded-lg animate-pulse"/>)}</div>
+        : hastalar.length === 0
+          ? <div className="flex items-center justify-center flex-1 text-slate-400 text-sm">Henüz hasta yok</div>
+          : (
+            <div className="divide-y divide-slate-50 flex-1 overflow-auto">
+              {hastalar.slice(0, rows >= 2 ? 8 : 4).map((h) => (
+                <Link key={h.id} href={`/hastalar/hasta-listesi/${h.id}`}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  className="flex items-center gap-3 px-5 py-3 hover:bg-slate-50 transition-colors">
+                  <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-xs font-bold text-blue-700 shrink-0">{initials(h.ad_soyad)}</div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-slate-800 truncate">{h.ad_soyad}</p>
+                    {h.islem && <p className="text-xs text-slate-400 truncate">{h.islem}</p>}
+                  </div>
+                  <p className="text-xs text-slate-400 shrink-0">
+                    {new Date(h.created_at).toLocaleDateString("tr-TR", { day: "numeric", month: "short" })}
+                  </p>
+                </Link>
+              ))}
+            </div>
+          )
+      }
     </div>
   );
 }
@@ -327,14 +369,14 @@ function HizliIslemlerWidget({ cols }: { cols: number }) {
   ];
   const gridCols = cols >= 4 ? "grid-cols-6" : cols >= 2 ? "grid-cols-3" : "grid-cols-2";
   return (
-    <div className="h-full p-4 flex flex-col">
+    <div className="h-full p-4 flex flex-col select-none">
       <div className="flex items-center gap-2 mb-3 shrink-0">
         <Zap size={14} className="text-blue-500" />
         <h2 className="text-sm font-bold text-slate-800">Hızlı İşlemler</h2>
       </div>
       <div className={`grid ${gridCols} gap-2 flex-1`}>
         {actions.map(({ label, href, icon: Icon, color }) => (
-          <Link key={label} href={href}
+          <Link key={label} href={href} onPointerDown={(e) => e.stopPropagation()}
             className={`flex flex-col items-center gap-1.5 p-2.5 rounded-xl ${C_BG[color]} hover:brightness-95 transition-all`}>
             <div className="w-8 h-8 rounded-xl flex items-center justify-center bg-white shadow-sm">
               <Icon size={15} className={C_TEXT[color]} />
@@ -349,9 +391,7 @@ function HizliIslemlerWidget({ cols }: { cols: number }) {
 
 // ─── Add Widget Panel ─────────────────────────────────────────────────────────
 function AddWidgetPanel({ widgets, onAdd, onClose }: {
-  widgets: WidgetCfg[];
-  onAdd: (type: WidgetType) => void;
-  onClose: () => void;
+  widgets: WidgetCfg[]; onAdd: (type: WidgetType) => void; onClose: () => void;
 }) {
   const activeTypes = new Set(widgets.map((w) => w.type));
   const available = CATALOG.filter((c) => !activeTypes.has(c.type));
@@ -374,9 +414,7 @@ function AddWidgetPanel({ widgets, onAdd, onClose }: {
               return (
                 <button key={cat.type} onClick={() => onAdd(cat.type)}
                   className="flex items-start gap-3 p-3.5 rounded-2xl border border-slate-200 hover:border-blue-300 hover:bg-blue-50 transition-all text-left group">
-                  <div className={`p-2 ${C_BG[cat.color]} rounded-xl shrink-0`}>
-                    <Icon size={15} className={C_TEXT[cat.color]} />
-                  </div>
+                  <div className={`p-2 ${C_BG[cat.color]} rounded-xl shrink-0`}><Icon size={15} className={C_TEXT[cat.color]} /></div>
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-slate-800 group-hover:text-blue-700">{cat.label}</p>
                     <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">{cat.desc}</p>
@@ -401,22 +439,46 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [todayStr, setTodayStr] = useState("");
-  const [dragId, setDragId] = useState<string | null>(null);
-  const [dragOverId, setDragOverId] = useState<string | null>(null);
-  const [resizePreview, setResizePreview] = useState<{ id: string; cols: 1 | 2 | 4; rows: 1 | 2 } | null>(null);
-  const gridRef = useRef<HTMLDivElement>(null);
 
+  // Grid container measurement
+  const gridRef = useRef<HTMLDivElement>(null);
+  const [containerW, setContainerW] = useState(0);
+  useEffect(() => {
+    if (!gridRef.current) return;
+    const ro = new ResizeObserver(([e]) => setContainerW(e.contentRect.width));
+    ro.observe(gridRef.current);
+    setContainerW(gridRef.current.offsetWidth);
+    return () => ro.disconnect();
+  }, []);
+
+  // ── Drag state ────────────────────────────────────────────────────────────────
+  // dragInfo: stable during a drag session (ref, not state)
+  const dragInfoRef = useRef<{ id: string; offsetX: number; offsetY: number } | null>(null);
+  // previewWidgets: live-reordered array while dragging
+  const [previewWidgets, setPreviewWidgets] = useState<WidgetCfg[]>([]);
+  const previewRef = useRef<WidgetCfg[]>([]);
+  // ghost position in container coords
+  const [ghostPos, setGhostPos] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const containerWRef = useRef(containerW);
+  useEffect(() => { containerWRef.current = containerW; }, [containerW]);
+
+  // ── Resize state ──────────────────────────────────────────────────────────────
+  const [resizePreview, setResizePreview] = useState<{ id: string; cols: 1|2|4; rows: 1|2 } | null>(null);
+  const resizePreviewRef = useRef(resizePreview);
+  useEffect(() => { resizePreviewRef.current = resizePreview; }, [resizePreview]);
+
+  // ── Persist/load ──────────────────────────────────────────────────────────────
   useEffect(() => {
     try {
       const stored = localStorage.getItem("aesthecore_dashboard_v2");
       if (stored) {
         const parsed = JSON.parse(stored) as WidgetCfg[];
-        const migrated = parsed.map((w) => ({
+        setWidgets(parsed.map((w) => ({
           ...w,
           cols: w.cols ?? (getCatalog(w.type)?.defaultCols ?? 1),
           rows: w.rows ?? (getCatalog(w.type)?.defaultRows ?? 1),
-        })) as WidgetCfg[];
-        setWidgets(migrated);
+        })) as WidgetCfg[]);
       }
     } catch { /* use defaults */ }
     setTodayStr(formatTurkishDate(new Date()));
@@ -427,16 +489,12 @@ export default function DashboardPage() {
     localStorage.setItem("aesthecore_dashboard_v2", JSON.stringify(w));
   }, []);
 
+  // ── Data fetch ────────────────────────────────────────────────────────────────
   const fetchData = useCallback(async () => {
     const yearStart = `${new Date().getFullYear()}-01-01`;
     const [
-      { count: toplamHasta },
-      { count: odemeBekleyen },
-      { count: bekleyenRandevu },
-      { data: randevuRaw },
-      { data: finansRaw },
-      { data: sonHastalarRaw },
-      { data: hastaRaw },
+      { count: toplamHasta }, { count: odemeBekleyen }, { count: bekleyenRandevu },
+      { data: randevuRaw }, { data: finansRaw }, { data: sonHastalarRaw }, { data: hastaRaw },
     ] = await Promise.all([
       supabase.from("hastalar").select("*", { count: "exact", head: true }),
       supabase.from("hastalar").select("*", { count: "exact", head: true }).eq("durum", "Ödeme Bekliyor"),
@@ -445,9 +503,7 @@ export default function DashboardPage() {
         .gte("tarih", new Date().toISOString().slice(0, 10) + "T00:00:00"),
       supabase.from("randevular")
         .select("id, tarih, islem_turu, durum, sure_dk, hasta_id, hastalar(ad_soyad)")
-        .gte("tarih", yearStart + "T00:00:00")
-        .order("tarih", { ascending: true })
-        .limit(500),
+        .gte("tarih", yearStart + "T00:00:00").order("tarih", { ascending: true }).limit(500),
       supabase.from("finans").select("tip, tutar, tarih").gte("tarih", yearStart),
       supabase.from("hastalar").select("id, ad_soyad, islem, created_at")
         .order("created_at", { ascending: false }).limit(8),
@@ -458,192 +514,195 @@ export default function DashboardPage() {
     try {
       const { count } = await supabase.from("stok").select("*", { count: "exact", head: true }).lt("adet", 5);
       kritikStok = count ?? 0;
-    } catch { /* stok table may not exist */ }
+    } catch { /* table may not exist */ }
 
-    type RandevuRaw = {
-      id: string; tarih: string; islem_turu: string | null;
-      durum: string | null; sure_dk: number | null; hasta_id: string;
-      hastalar: { ad_soyad: string } | null;
-    };
-    const randevular = ((randevuRaw ?? []) as unknown as RandevuRaw[]).map((r) => ({
+    type RR = { id: string; tarih: string; islem_turu: string|null; durum: string|null; sure_dk: number|null; hasta_id: string; hastalar: { ad_soyad: string }|null };
+    type FR = { tip: string|null; tutar: number|null; tarih: string|null };
+    type HR = { created_at: string|null };
+
+    const randevular = ((randevuRaw ?? []) as unknown as RR[]).map((r) => ({
       id: r.id, tarih: r.tarih, islem_turu: r.islem_turu, durum: r.durum,
-      sure_dk: r.sure_dk, hasta_id: r.hasta_id,
-      hasta_adi: r.hastalar?.ad_soyad ?? "Bilinmiyor",
+      sure_dk: r.sure_dk, hasta_id: r.hasta_id, hasta_adi: r.hastalar?.ad_soyad ?? "Bilinmiyor",
     }));
+    const fi = (finansRaw ?? []) as FR[];
 
-    type FinansRaw = { tip: string | null; tutar: number | null; tarih: string | null };
-    const finansItems = (finansRaw ?? []) as FinansRaw[];
-
-    type HastaCreatedAt = { created_at: string | null };
     setData({
-      toplamHasta: toplamHasta ?? 0,
-      odemeBekleyen: odemeBekleyen ?? 0,
-      bekleyenRandevu: bekleyenRandevu ?? 0,
-      kritikStok,
-      randevular,
-      gelirItems: finansItems.filter((f) => f.tip === "Gelir").map((f) => ({ tarih: f.tarih ?? "", tutar: Number(f.tutar ?? 0) })),
-      giderItems: finansItems.filter((f) => f.tip === "Gider").map((f) => ({ tarih: f.tarih ?? "", tutar: Number(f.tutar ?? 0) })),
-      hastaCreatedAt: ((hastaRaw ?? []) as HastaCreatedAt[]).map((h) => h.created_at ?? ""),
-      sonHastalar: (sonHastalarRaw ?? []) as { id: string; ad_soyad: string; islem: string | null; created_at: string }[],
+      toplamHasta: toplamHasta ?? 0, odemeBekleyen: odemeBekleyen ?? 0,
+      bekleyenRandevu: bekleyenRandevu ?? 0, kritikStok, randevular,
+      gelirItems: fi.filter(f=>f.tip==="Gelir").map(f=>({ tarih: f.tarih??"", tutar: Number(f.tutar??0) })),
+      giderItems: fi.filter(f=>f.tip==="Gider").map(f=>({ tarih: f.tarih??"", tutar: Number(f.tutar??0) })),
+      hastaCreatedAt: ((hastaRaw??[]) as HR[]).map(h=>h.created_at??""),
+      sonHastalar: (sonHastalarRaw??[]) as { id: string; ad_soyad: string; islem: string|null; created_at: string }[],
     });
   }, []);
 
-  useEffect(() => {
-    setLoading(true);
-    fetchData().finally(() => setLoading(false));
-  }, [fetchData]);
+  useEffect(() => { setLoading(true); fetchData().finally(() => setLoading(false)); }, [fetchData]);
 
-  const handleRefresh = async () => {
-    setRefreshing(true);
-    await fetchData();
-    setRefreshing(false);
-  };
+  const handleRefresh = async () => { setRefreshing(true); await fetchData(); setRefreshing(false); };
 
-  // Value helpers
-  const getRandevuCount = (range: DateRangeKey) =>
-    !data ? "—" : filterByRange(data.randevular, range).length.toString();
-
-  const getGelir = (range: DateRangeKey) => {
+  // ── Value helpers ─────────────────────────────────────────────────────────────
+  const getRandevuCount = (r: DateRangeKey) => !data ? "—" : filterByRange(data.randevular, r).length.toString();
+  const getGelir = (r: DateRangeKey) => !data ? "—" : currency(filterByRange(data.gelirItems, r).reduce((s,i)=>s+i.tutar,0));
+  const getNetKar = (r: DateRangeKey) => {
     if (!data) return "—";
-    return currency(filterByRange(data.gelirItems, range).reduce((s, i) => s + i.tutar, 0));
+    const g = filterByRange(data.gelirItems, r).reduce((s,i)=>s+i.tutar,0);
+    const d = filterByRange(data.giderItems, r).reduce((s,i)=>s+i.tutar,0);
+    return currency(g - d);
   };
+  const getYeniHasta = (r: DateRangeKey) =>
+    !data ? "—" : data.hastaCreatedAt.filter(d=>d>=getStartDate(r)).length.toString();
 
-  const getNetKar = (range: DateRangeKey) => {
-    if (!data) return "—";
-    const gelir = filterByRange(data.gelirItems, range).reduce((s, i) => s + i.tutar, 0);
-    const gider = filterByRange(data.giderItems, range).reduce((s, i) => s + i.tutar, 0);
-    return currency(gelir - gider);
-  };
-
-  const getYeniHasta = (range: DateRangeKey) => {
-    if (!data) return "—";
-    const start = getStartDate(range);
-    return data.hastaCreatedAt.filter((d) => d >= start).length.toString();
-  };
-
-  // Widget config
-  const updateDateRange = (id: string, dateRange: DateRangeKey) =>
-    saveWidgets(widgets.map((w) => w.id === id ? { ...w, dateRange } : w));
-
+  // ── Widget config ─────────────────────────────────────────────────────────────
+  const updateDateRange = (id: string, dr: DateRangeKey) =>
+    saveWidgets(widgets.map((w) => w.id === id ? { ...w, dateRange: dr } : w));
   const removeWidget = (id: string) => saveWidgets(widgets.filter((w) => w.id !== id));
-
   const addWidget = (type: WidgetType) => {
     const cat = getCatalog(type);
-    saveWidgets([...widgets, {
-      id: `w${Date.now()}`, type,
-      dateRange: cat.hasDateRange ? "bu_ay" : undefined,
-      cols: cat.defaultCols, rows: cat.defaultRows,
-    }]);
+    saveWidgets([...widgets, { id: `w${Date.now()}`, type, dateRange: cat.hasDateRange ? "bu_ay" : undefined, cols: cat.defaultCols, rows: cat.defaultRows }]);
     setShowAdd(false);
   };
 
-  // ── Drag to reorder ──────────────────────────────────────────────────────────
-  const handleDragStart = (e: React.DragEvent<HTMLDivElement>, id: string) => {
-    setDragId(id);
-    e.dataTransfer.effectAllowed = "move";
+  // ── Layout computation ────────────────────────────────────────────────────────
+  // While dragging, use previewWidgets; otherwise use widgets.
+  // resizePreview temporarily overrides a widget's cols/rows.
+  const effectiveWidgets = useMemo(() => {
+    const base = isDragging ? previewWidgets : widgets;
+    if (!resizePreview) return base;
+    return base.map(w => w.id === resizePreview.id ? { ...w, cols: resizePreview.cols, rows: resizePreview.rows } : w);
+  }, [isDragging, previewWidgets, widgets, resizePreview]);
+
+  const layout = useMemo(() => computeGridLayout(effectiveWidgets, containerW), [effectiveWidgets, containerW]);
+
+  const containerHeight = useMemo(() => {
+    const vals = Object.values(layout);
+    return vals.length ? Math.max(...vals.map(p => p.y + p.h)) + GAP : 300;
+  }, [layout]);
+
+  // ── Pointer drag: start ───────────────────────────────────────────────────────
+  // We only initiate drag after the pointer has moved > 6px (allows clicks through)
+  const pointerDownRef = useRef<{ id: string; startX: number; startY: number; startLayout: Record<string, WidgetPos> } | null>(null);
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>, widgetId: string) => {
+    if (!editMode || !gridRef.current) return;
+    const containerRect = gridRef.current.getBoundingClientRect();
+    const cx = e.clientX - containerRect.left;
+    const cy = e.clientY - containerRect.top;
+    const pos = layout[widgetId];
+    if (!pos) return;
+    pointerDownRef.current = { id: widgetId, startX: e.clientX, startY: e.clientY, startLayout: layout };
+    // Capture so we receive moves even outside the element
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    // Store offset from widget top-left
+    dragInfoRef.current = { id: widgetId, offsetX: cx - pos.x, offsetY: cy - pos.y };
   };
 
-  const handleDragOver = (e: React.DragEvent<HTMLDivElement>, id: string) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    if (id !== dragOverId) setDragOverId(id);
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!gridRef.current) return;
+    const containerRect = gridRef.current.getBoundingClientRect();
+    const cx = e.clientX - containerRect.left;
+    const cy = e.clientY - containerRect.top;
+
+    // Check if we should start the drag
+    if (!isDragging && pointerDownRef.current) {
+      const dist = Math.hypot(e.clientX - pointerDownRef.current.startX, e.clientY - pointerDownRef.current.startY);
+      if (dist > 6) {
+        setIsDragging(true);
+        const initPreview = [...widgets];
+        setPreviewWidgets(initPreview);
+        previewRef.current = initPreview;
+      } else return;
+    }
+
+    if (!isDragging || !dragInfoRef.current) return;
+    const { id, offsetX, offsetY } = dragInfoRef.current;
+
+    // Ghost position
+    const ghostX = cx - offsetX;
+    const ghostY = cy - offsetY;
+    setGhostPos({ x: ghostX, y: ghostY });
+
+    // Ghost center
+    const dragged = previewRef.current.find(w => w.id === id);
+    if (!dragged) return;
+    const cw = containerWRef.current;
+    const colW = (cw - 3 * GAP) / 4;
+    const ghostW = dragged.cols * colW + (dragged.cols - 1) * GAP;
+    const ghostH = dragged.rows * ROW_H + (dragged.rows - 1) * GAP;
+
+    const ghostCX = ghostX + ghostW / 2;
+    const ghostCY = ghostY + ghostH / 2;
+
+    // Compute insert order
+    const others = previewRef.current.filter(w => w.id !== id);
+    const othersLayout = computeGridLayout(others, cw);
+    const newPreview = computeInsertOrder(ghostCX, ghostCY, dragged, others, othersLayout);
+    previewRef.current = newPreview;
+    setPreviewWidgets([...newPreview]);
   };
 
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>, targetId: string) => {
-    e.preventDefault();
-    if (!dragId || dragId === targetId) { setDragId(null); setDragOverId(null); return; }
-    const arr = [...widgets];
-    const fromIdx = arr.findIndex((w) => w.id === dragId);
-    const toIdx = arr.findIndex((w) => w.id === targetId);
-    arr.splice(toIdx, 0, arr.splice(fromIdx, 1)[0]);
-    saveWidgets(arr);
-    setDragId(null);
-    setDragOverId(null);
+  const handlePointerUp = () => {
+    if (isDragging) {
+      saveWidgets(previewRef.current);
+    }
+    setIsDragging(false);
+    dragInfoRef.current = null;
+    pointerDownRef.current = null;
   };
 
-  const handleDragEnd = () => { setDragId(null); setDragOverId(null); };
+  const handlePointerCancel = () => {
+    setIsDragging(false);
+    dragInfoRef.current = null;
+    pointerDownRef.current = null;
+  };
 
-  // ── Drag to resize ───────────────────────────────────────────────────────────
-  const handleResizeStart = (e: React.MouseEvent, widgetId: string) => {
+  // ── Resize ────────────────────────────────────────────────────────────────────
+  const handleResizeStart = (e: React.PointerEvent, widgetId: string) => {
     e.preventDefault();
     e.stopPropagation();
-    const grid = gridRef.current;
-    if (!grid) return;
-    const gridRect = grid.getBoundingClientRect();
-    const GAP = 16;
-    const colW = (gridRect.width - 3 * GAP) / 4;
+    if (!gridRef.current) return;
+    const gridRect = gridRef.current.getBoundingClientRect();
+    const colW = (containerW - 3 * GAP) / 4;
+    const w = widgets.find(x => x.id === widgetId);
+    let preview: { cols: 1|2|4; rows: 1|2 } = { cols: w?.cols ?? 1, rows: w?.rows ?? 1 };
 
-    const widget = widgets.find((w) => w.id === widgetId);
-    let preview: { cols: 1 | 2 | 4; rows: 1 | 2 } = {
-      cols: widget?.cols ?? 1,
-      rows: widget?.rows ?? 1,
-    };
-
-    const onMove = (me: MouseEvent) => {
+    const onMove = (me: PointerEvent) => {
       const relX = me.clientX - gridRect.left;
-      const rawCol = relX / (colW + GAP);
-      const newCols: 1 | 2 | 4 = rawCol < 1.5 ? 1 : rawCol < 3 ? 2 : 4;
-
-      const widgetEl = document.querySelector(`[data-widget-id="${widgetId}"]`);
-      const widgetRect = widgetEl?.getBoundingClientRect();
-      const deltaY = widgetRect ? me.clientY - widgetRect.bottom : 0;
-      const newRows: 1 | 2 = deltaY > 60 ? 2 : 1;
-
+      const raw = relX / (colW + GAP);
+      const newCols: 1|2|4 = raw < 1.5 ? 1 : raw < 3 ? 2 : 4;
+      const wEl = document.querySelector(`[data-widget-id="${widgetId}"]`);
+      const wRect = wEl?.getBoundingClientRect();
+      const newRows: 1|2 = wRect && me.clientY - wRect.bottom > 60 ? 2 : 1;
       if (newCols !== preview.cols || newRows !== preview.rows) {
         preview = { cols: newCols, rows: newRows };
         setResizePreview({ id: widgetId, ...preview });
       }
     };
-
     const onUp = () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      setWidgets((prev) => {
-        const next = prev.map((w) =>
-          w.id === widgetId ? { ...w, cols: preview.cols, rows: preview.rows } : w
-        );
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      setWidgets(prev => {
+        const next = prev.map(x => x.id === widgetId ? { ...x, cols: preview.cols, rows: preview.rows } : x);
         localStorage.setItem("aesthecore_dashboard_v2", JSON.stringify(next));
         return next;
       });
       setResizePreview(null);
     };
-
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
   };
 
-  // Resolved sizes (preview overrides saved value while resizing)
-  const resolvedCols = (w: WidgetCfg): 1 | 2 | 4 =>
-    resizePreview?.id === w.id ? resizePreview.cols : w.cols;
-  const resolvedRows = (w: WidgetCfg): 1 | 2 =>
-    resizePreview?.id === w.id ? resizePreview.rows : w.rows;
-
-  // ── Render widget content (fills h-full) ─────────────────────────────────────
-  const renderWidgetContent = (w: WidgetCfg) => {
+  // ── Widget content render ─────────────────────────────────────────────────────
+  const renderContent = (w: WidgetCfg, cols: number, rows: number) => {
     const cat = getCatalog(w.type);
     const dr = (w.dateRange ?? "bu_ay") as DateRangeKey;
-    const cols = resolvedCols(w);
-    const rows = resolvedRows(w);
 
-    if (w.type === "randevu_listesi") {
-      return (
-        <RandevuListeWidget
-          randevular={data?.randevular ?? []}
-          loading={loading}
-          dateRange={dr}
-          onDateRangeChange={(d) => updateDateRange(w.id, d)}
-          rows={rows}
-        />
-      );
-    }
-    if (w.type === "son_hastalar") {
-      return <SonHastalarWidget hastalar={data?.sonHastalar ?? []} loading={loading} rows={rows} />;
-    }
-    if (w.type === "hizli_islemler") {
+    if (w.type === "randevu_listesi")
+      return <RandevuListeWidget randevular={data?.randevular??[]} loading={loading} dateRange={dr} onDateRangeChange={d=>updateDateRange(w.id,d)} rows={rows} />;
+    if (w.type === "son_hastalar")
+      return <SonHastalarWidget hastalar={data?.sonHastalar??[]} loading={loading} rows={rows} />;
+    if (w.type === "hizli_islemler")
       return <HizliIslemlerWidget cols={cols} />;
-    }
 
-    // KPI card
     let value: string | number = "—";
     let subLabel: string | undefined;
     if (data) {
@@ -658,35 +717,25 @@ export default function DashboardPage() {
         case "kritik_stok":         value = data.kritikStok; subLabel = data.kritikStok > 0 ? "Acil kontrol" : "Her şey yolunda"; break;
       }
     }
-
     return (
-      <KpiCard
-        cat={cat}
-        value={loading ? "…" : value}
-        subLabel={subLabel}
-        loading={loading}
+      <KpiCard cat={cat} value={loading ? "…" : value} subLabel={subLabel} loading={loading}
         dateRange={cat.hasDateRange ? dr : undefined}
-        onDateRangeChange={cat.hasDateRange ? (v) => updateDateRange(w.id, v) : undefined}
-      />
+        onDateRangeChange={cat.hasDateRange ? v=>updateDateRange(w.id,v) : undefined} />
     );
   };
+
+  const dragId = dragInfoRef.current?.id ?? null;
 
   return (
     <>
       <style>{`
-        @keyframes dashWiggle {
-          0%, 100% { transform: rotate(-0.5deg); }
-          50% { transform: rotate(0.5deg); }
-        }
+        @keyframes dashWiggle { 0%,100%{transform:rotate(-0.5deg)} 50%{transform:rotate(0.5deg)} }
         .dashboard-wiggle { animation: dashWiggle 0.4s ease-in-out infinite; }
-        @keyframes slideUp {
-          from { transform: translateY(100%); }
-          to { transform: translateY(0); }
-        }
+        @keyframes slideUp { from{transform:translateY(100%)} to{transform:translateY(0)} }
         .animate-slideUp { animation: slideUp 0.3s cubic-bezier(0.4,0,0.2,1); }
       `}</style>
 
-      <div className="p-6 lg:p-8 bg-slate-50 min-h-full space-y-5">
+      <div className={`p-6 lg:p-8 bg-slate-50 min-h-full space-y-5 ${isDragging ? "select-none" : ""}`}>
         {/* Header */}
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
@@ -704,20 +753,15 @@ export default function DashboardPage() {
                 <Plus size={14} /> Widget Ekle
               </button>
             )}
-            <button
-              onClick={() => setEditMode((v) => !v)}
+            <button onClick={() => setEditMode(v => !v)}
               className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-xl border transition-all ${
-                editMode
-                  ? "bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700"
-                  : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
-              }`}
-            >
+                editMode ? "bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+              }`}>
               {editMode ? <><Check size={14} /> Bitti</> : <><Pencil size={14} /> Düzenle</>}
             </button>
           </div>
         </div>
 
-        {/* Edit mode hint */}
         {editMode && (
           <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-2xl px-4 py-2.5 text-sm text-blue-700">
             <AlertCircle size={14} className="shrink-0" />
@@ -725,66 +769,72 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Widget Grid — outer container has z-0 so controls can overflow */}
+        {/* Widget container — absolute positioning for smooth drag transitions */}
         <div
           ref={gridRef}
-          className="grid grid-cols-4 gap-4"
-          style={{ gridAutoFlow: "dense" }}
-          onDragOver={(e) => e.preventDefault()}
+          className="relative"
+          style={{ height: containerHeight }}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerCancel}
         >
-          {widgets.map((w) => {
-            const cols = resolvedCols(w);
-            const rows = resolvedRows(w);
-            const isDragging = dragId === w.id;
-            const isDragOver = dragOverId === w.id && dragId !== w.id;
-            const minH = rows >= 2 ? "min-h-[320px]" : "min-h-[140px]";
+          {effectiveWidgets.map((w) => {
+            const pos = layout[w.id];
+            if (!pos) return null;
+            const isGhost = isDragging && w.id === dragId;
+            const cols = w.cols;
+            const rows = w.rows;
 
             return (
               <div
                 key={w.id}
                 data-widget-id={w.id}
-                draggable={editMode}
-                onDragStart={(e) => handleDragStart(e, w.id)}
-                onDragOver={(e) => handleDragOver(e, w.id)}
-                onDrop={(e) => handleDrop(e, w.id)}
-                onDragEnd={handleDragEnd}
-                style={{ gridColumn: `span ${cols}`, gridRow: `span ${rows}` }}
-                className={`relative ${minH} transition-all duration-150 ${isDragging ? "opacity-25" : ""}`}
+                onPointerDown={(e) => handlePointerDown(e, w.id)}
+                style={{
+                  position: "absolute",
+                  left: isGhost ? ghostPos.x : pos.x,
+                  top: isGhost ? ghostPos.y : pos.y,
+                  width: pos.w,
+                  height: pos.h,
+                  // Ghost floats above; others transition smoothly
+                  zIndex: isGhost ? 50 : 1,
+                  transition: isGhost ? "none" : (editMode ? "left 0.22s cubic-bezier(0.4,0,0.2,1), top 0.22s cubic-bezier(0.4,0,0.2,1)" : "left 0.22s, top 0.22s"),
+                  cursor: editMode && !isGhost ? "grab" : "default",
+                }}
+                className={isGhost ? "" : ""}
               >
-                {/* Inner card — overflow-hidden so content stays clipped */}
-                <div className={`h-full bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden transition-all duration-200 ${
-                  editMode
-                    ? `dashboard-wiggle ring-2 ring-offset-2 ${isDragOver ? "ring-blue-400 scale-[0.97]" : "ring-slate-300"}`
-                    : "hover:-translate-y-0.5 hover:shadow-md"
-                }`}>
-                  {renderWidgetContent(w)}
+                {/* Card shell */}
+                <div
+                  className={`h-full bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden transition-all duration-150 ${
+                    isGhost
+                      ? "shadow-2xl scale-[1.03] opacity-90 rotate-1 ring-2 ring-blue-400"
+                      : editMode
+                        ? "dashboard-wiggle ring-2 ring-offset-2 ring-slate-300 hover:ring-blue-300"
+                        : "hover:-translate-y-0.5 hover:shadow-md"
+                  }`}
+                >
+                  {renderContent(w, cols, rows)}
                 </div>
 
-                {/* Edit controls — outside inner card, can overflow widget bounds */}
-                {editMode && (
+                {/* Edit controls — outside shell so they don't clip */}
+                {editMode && !isGhost && (
                   <>
-                    {/* Remove button */}
                     <button
-                      onClick={(e) => { e.stopPropagation(); removeWidget(w.id); }}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={() => removeWidget(w.id)}
                       className="absolute -top-2.5 -right-2.5 w-6 h-6 bg-slate-700 hover:bg-red-500 text-white rounded-full flex items-center justify-center z-30 shadow-lg transition-colors"
                     >
                       <X size={11} />
                     </button>
-
-                    {/* Drag grip indicator */}
-                    <div className="absolute top-2.5 left-2.5 z-20 text-slate-300 pointer-events-none">
-                      <GripVertical size={13} />
-                    </div>
-
-                    {/* Resize handle — bottom-right corner */}
+                    {/* Resize handle */}
                     <div
-                      onMouseDown={(e) => handleResizeStart(e, w.id)}
-                      title={`Boyutlandır (şu an ${cols}×${rows})`}
+                      onPointerDown={(e) => handleResizeStart(e, w.id)}
+                      title={`Boyutlandır (${cols}×${rows})`}
                       className="absolute bottom-2 right-2 z-20 cursor-se-resize flex items-center gap-1 select-none group"
                     >
-                      <span className="text-[9px] font-mono text-slate-400 group-hover:text-slate-600 leading-none">{cols}×{rows}</span>
+                      <span className="text-[9px] font-mono text-slate-400 group-hover:text-slate-600">{cols}×{rows}</span>
                       <svg width="10" height="10" viewBox="0 0 10 10" className="text-slate-400 group-hover:text-slate-600">
-                        <path d="M1 9 L9 1 M5 9 L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                        <path d="M1 9L9 1M5 9L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
                       </svg>
                     </div>
                   </>
@@ -794,10 +844,7 @@ export default function DashboardPage() {
           })}
         </div>
 
-        {/* Add widget sheet */}
-        {showAdd && (
-          <AddWidgetPanel widgets={widgets} onAdd={addWidget} onClose={() => setShowAdd(false)} />
-        )}
+        {showAdd && <AddWidgetPanel widgets={widgets} onAdd={addWidget} onClose={() => setShowAdd(false)} />}
       </div>
     </>
   );
