@@ -625,11 +625,14 @@ export default function DashboardPage() {
     const ghostCX = ghostX + dragged.cols * colW / 2 + (dragged.cols - 1) * GAP / 2;
     const ghostCY = ghostY + dragged.rows * ROW_H / 2 + (dragged.rows - 1) * GAP / 2;
 
-    // Use current preview positions (not frozen) with a ±28% dead zone to prevent
-    // oscillation. The dead zone gives equal sensitivity in every direction.
+    // Use the FULL preview layout so widget positions match what's visually shown.
+    // Computing without the dragged widget would give different positions than what
+    // the user sees, causing asymmetric trigger distances left vs right.
     const dragIdx = previewRef.current.findIndex(w => w.id === id);
     const others = previewRef.current.filter(w => w.id !== id);
-    const othersLayout = computeGridLayout(others, cw);
+    const fullLayout = computeGridLayout(previewRef.current, cw);
+    const othersLayout: Record<string, WidgetPos> = {};
+    others.forEach(w => { const p = fullLayout[w.id]; if (p) othersLayout[w.id] = p; });
     const newPreview = computeInsertOrder(ghostCX, ghostCY, dragged, others, othersLayout, dragIdx);
     previewRef.current = newPreview;
     setPreviewWidgets([...newPreview]);
@@ -658,20 +661,22 @@ export default function DashboardPage() {
     const gridRect = gridRef.current.getBoundingClientRect();
     const colW = (containerW - 3 * GAP) / 4;
     const w = widgets.find(x => x.id === widgetId);
+    // Widget's starting column (0–3) — needed so snap thresholds are relative to
+    // the widget's left edge, not the grid's left edge.
+    const wPos = layout[widgetId];
+    const widgetStartCol = wPos ? Math.round(wPos.x / (colW + GAP)) : 0;
     let preview: { cols: 1|2|4; rows: 1|2 } = { cols: w?.cols ?? 1, rows: w?.rows ?? 1 };
 
-    // Hysteresis thresholds — expand zone so casual moves don't snap cols/rows.
-    // Each boundary has a "grow" threshold (must go past to step up) and
-    // a "shrink" threshold (must come back past to step down).
+    // Hysteresis thresholds in column-units relative to the widget's start column.
     const colSnap = (relX: number, current: 1|2|4): 1|2|4 => {
-      const raw = relX / (colW + GAP); // 0–4 in column units
-      if (current === 1) return raw > 1.8 ? 2 : 1;           // snap up at 1.8 col
+      const raw = (relX - widgetStartCol * (colW + GAP)) / (colW + GAP);
+      if (current === 1) return raw > 1.8 ? 2 : 1;
       if (current === 2) {
-        if (raw < 1.2) return 1;                              // snap down at 1.2
-        if (raw > 3.2) return 4;                              // snap up at 3.2
+        if (raw < 1.2) return 1;
+        if (raw > 3.2 && widgetStartCol === 0) return 4;     // only col-0 can go 4-wide
         return 2;
       }
-      return raw < 2.8 ? 2 : 4;                              // snap down at 2.8
+      return raw < 2.8 ? 2 : 4;
     };
 
     const rowSnap = (deltaY: number, current: 1|2): 1|2 => {
