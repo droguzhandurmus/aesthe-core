@@ -95,35 +95,29 @@ function computeGridLayout(widgetList: WidgetCfg[], containerW: number): Record<
   return result;
 }
 
-// Given ghost center (cx, cy), find the best insertion index among `others`.
-// defaultIdx = current position of dragged in the list (kept when ghost is in dead zone).
-// Symmetric dead zone (±DEAD) prevents oscillation near boundaries in both directions.
+// For each possible insertion slot, compute where the dragged widget lands in the grid,
+// then pick the slot whose grid position is closest to the ghost center.
+// This is inherently symmetric (left = right = up = down) and oscillation-free:
+// the trigger fires exactly at the midpoint between two adjacent grid positions,
+// and ties keep the current order (strict < comparison).
 function computeInsertOrder(
-  cx: number, cy: number,
+  ghostCX: number, ghostCY: number,
   dragged: WidgetCfg,
   others: WidgetCfg[],
-  othersLayout: Record<string, WidgetPos>,
-  defaultIdx: number,
+  containerW: number,
+  currentIdx: number,
 ): WidgetCfg[] {
-  const DEAD = 0.28; // ±28 % of widget dimension before a swap triggers
-  let bestIdx = defaultIdx;
+  let bestIdx = currentIdx; // ties → keep current order (no oscillation)
   let bestDist = Infinity;
 
-  others.forEach((w, i) => {
-    const p = othersLayout[w.id];
-    if (!p) return;
-    const wcx = p.x + p.w / 2;
-    const wcy = p.y + p.h / 2;
-    const dist = Math.hypot(cx - wcx, cy - wcy);
-    if (dist < bestDist) {
-      bestDist = dist;
-      if      (cy < wcy - p.h * DEAD) bestIdx = i;
-      else if (cy > wcy + p.h * DEAD) bestIdx = i + 1;
-      else if (cx < wcx - p.w * DEAD) bestIdx = i;
-      else if (cx > wcx + p.w * DEAD) bestIdx = i + 1;
-      // inside dead zone → keep defaultIdx (no change)
-    }
-  });
+  for (let i = 0; i <= others.length; i++) {
+    const trial = [...others];
+    trial.splice(i, 0, dragged);
+    const pos = computeGridLayout(trial, containerW)[dragged.id];
+    if (!pos) continue;
+    const dist = Math.hypot(ghostCX - (pos.x + pos.w / 2), ghostCY - (pos.y + pos.h / 2));
+    if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+  }
 
   const arr = [...others];
   arr.splice(bestIdx, 0, dragged);
@@ -374,19 +368,19 @@ function HizliIslemlerWidget({ cols }: { cols: number }) {
   ];
   const gridCols = cols >= 4 ? "grid-cols-6" : cols >= 2 ? "grid-cols-3" : "grid-cols-2";
   return (
-    <div className="h-full p-4 flex flex-col select-none">
-      <div className="flex items-center gap-2 mb-3 shrink-0">
-        <Zap size={14} className="text-blue-500" />
-        <h2 className="text-sm font-bold text-slate-800">Hızlı İşlemler</h2>
+    <div className="h-full p-3 flex flex-col select-none">
+      <div className="flex items-center gap-2 mb-2 shrink-0">
+        <Zap size={13} className="text-blue-500" />
+        <h2 className="text-xs font-bold text-slate-800">Hızlı İşlemler</h2>
       </div>
-      <div className={`grid ${gridCols} gap-2 flex-1`}>
+      <div className={`grid ${gridCols} gap-1.5 flex-1`}>
         {actions.map(({ label, href, icon: Icon, color }) => (
           <Link key={label} href={href} onPointerDown={(e) => e.stopPropagation()}
-            className={`flex flex-col items-center gap-1.5 p-2.5 rounded-xl ${C_BG[color]} hover:brightness-95 transition-all`}>
-            <div className="w-8 h-8 rounded-xl flex items-center justify-center bg-white shadow-sm">
-              <Icon size={15} className={C_TEXT[color]} />
+            className={`flex flex-col items-center justify-center gap-1 p-1.5 rounded-xl ${C_BG[color]} hover:brightness-95 transition-all`}>
+            <div className="w-7 h-7 rounded-lg flex items-center justify-center bg-white shadow-sm shrink-0">
+              <Icon size={13} className={C_TEXT[color]} />
             </div>
-            <span className="text-[10px] font-semibold text-slate-600 text-center leading-tight">{label}</span>
+            <span className="text-[9px] font-semibold text-slate-600 text-center leading-tight w-full">{label}</span>
           </Link>
         ))}
       </div>
@@ -625,15 +619,9 @@ export default function DashboardPage() {
     const ghostCX = ghostX + dragged.cols * colW / 2 + (dragged.cols - 1) * GAP / 2;
     const ghostCY = ghostY + dragged.rows * ROW_H / 2 + (dragged.rows - 1) * GAP / 2;
 
-    // Use the FULL preview layout so widget positions match what's visually shown.
-    // Computing without the dragged widget would give different positions than what
-    // the user sees, causing asymmetric trigger distances left vs right.
     const dragIdx = previewRef.current.findIndex(w => w.id === id);
     const others = previewRef.current.filter(w => w.id !== id);
-    const fullLayout = computeGridLayout(previewRef.current, cw);
-    const othersLayout: Record<string, WidgetPos> = {};
-    others.forEach(w => { const p = fullLayout[w.id]; if (p) othersLayout[w.id] = p; });
-    const newPreview = computeInsertOrder(ghostCX, ghostCY, dragged, others, othersLayout, dragIdx);
+    const newPreview = computeInsertOrder(ghostCX, ghostCY, dragged, others, cw, dragIdx);
     previewRef.current = newPreview;
     setPreviewWidgets([...newPreview]);
   };
@@ -667,21 +655,23 @@ export default function DashboardPage() {
     const widgetStartCol = wPos ? Math.round(wPos.x / (colW + GAP)) : 0;
     let preview: { cols: 1|2|4; rows: 1|2 } = { cols: w?.cols ?? 1, rows: w?.rows ?? 1 };
 
-    // Hysteresis thresholds in column-units relative to the widget's start column.
+    // raw = cursor position in column-units from widget's left edge.
+    // Thresholds are intentionally wide so accidental moves don't snap.
+    // Grow threshold ≈ 90% of target width, shrink threshold ≈ 45% of current width.
     const colSnap = (relX: number, current: 1|2|4): 1|2|4 => {
       const raw = (relX - widgetStartCol * (colW + GAP)) / (colW + GAP);
-      if (current === 1) return raw > 1.8 ? 2 : 1;
+      if (current === 1) return raw > 1.9 ? 2 : 1;                          // need to reach ~90% of 2-col width
       if (current === 2) {
-        if (raw < 1.2) return 1;
-        if (raw > 3.2 && widgetStartCol === 0) return 4;     // only col-0 can go 4-wide
+        if (raw < 0.9) return 1;                                             // shrunk past half of 1-col
+        if (raw > 3.7 && widgetStartCol === 0) return 4;                     // only col-0 can go 4-wide
         return 2;
       }
-      return raw < 2.8 ? 2 : 4;
+      return raw < 2.2 ? 2 : 4;                                             // shrunk to ~55% of 4-col width
     };
 
     const rowSnap = (deltaY: number, current: 1|2): 1|2 => {
-      if (current === 1) return deltaY > 90 ? 2 : 1;         // snap to 2 rows after 90px
-      return deltaY < 30 ? 1 : 2;                            // snap back to 1 row before 30px
+      if (current === 1) return deltaY > 140 ? 2 : 1;                       // 140px below bottom to expand
+      return deltaY < 20 ? 1 : 2;                                           // nearly back at bottom to shrink
     };
 
     const onMove = (me: PointerEvent) => {
