@@ -452,16 +452,19 @@ export default function DashboardPage() {
   }, []);
 
   // ── Drag state ────────────────────────────────────────────────────────────────
-  // dragInfo: stable during a drag session (ref, not state)
   const dragInfoRef = useRef<{ id: string; offsetX: number; offsetY: number } | null>(null);
-  // previewWidgets: live-reordered array while dragging
   const [previewWidgets, setPreviewWidgets] = useState<WidgetCfg[]>([]);
   const previewRef = useRef<WidgetCfg[]>([]);
-  // ghost position in container coords
   const [ghostPos, setGhostPos] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const containerWRef = useRef(containerW);
   useEffect(() => { containerWRef.current = containerW; }, [containerW]);
+
+  // Stable reference layout — set once at drag start, never updated during drag.
+  // Using this (instead of the live-reordered previewRef) eliminates the feedback
+  // loop that caused faster-seeming animation in one direction.
+  const refOthersRef = useRef<WidgetCfg[]>([]);
+  const refOthersLayoutRef = useRef<Record<string, WidgetPos>>({});
 
   // ── Resize state ──────────────────────────────────────────────────────────────
   const [resizePreview, setResizePreview] = useState<{ id: string; cols: 1|2|4; rows: 1|2 } | null>(null);
@@ -610,6 +613,11 @@ export default function DashboardPage() {
         const initPreview = [...widgets];
         setPreviewWidgets(initPreview);
         previewRef.current = initPreview;
+        // Freeze stable reference — never updated during this drag session
+        const id = pointerDownRef.current.id;
+        const originalOthers = widgets.filter(w => w.id !== id);
+        refOthersRef.current = originalOthers;
+        refOthersLayoutRef.current = computeGridLayout(originalOthers, containerWRef.current);
       } else return;
     }
 
@@ -621,21 +629,19 @@ export default function DashboardPage() {
     const ghostY = cy - offsetY;
     setGhostPos({ x: ghostX, y: ghostY });
 
-    // Ghost center
-    const dragged = previewRef.current.find(w => w.id === id);
+    // Ghost centre — use original dragged widget dimensions
+    const dragged = widgets.find(w => w.id === id);
     if (!dragged) return;
     const cw = containerWRef.current;
     const colW = (cw - 3 * GAP) / 4;
     const ghostW = dragged.cols * colW + (dragged.cols - 1) * GAP;
     const ghostH = dragged.rows * ROW_H + (dragged.rows - 1) * GAP;
-
     const ghostCX = ghostX + ghostW / 2;
     const ghostCY = ghostY + ghostH / 2;
 
-    // Compute insert order
-    const others = previewRef.current.filter(w => w.id !== id);
-    const othersLayout = computeGridLayout(others, cw);
-    const newPreview = computeInsertOrder(ghostCX, ghostCY, dragged, others, othersLayout);
+    // Insert order is always computed against the frozen reference layout so
+    // each direction behaves identically (no feedback loop from reordered positions).
+    const newPreview = computeInsertOrder(ghostCX, ghostCY, dragged, refOthersRef.current, refOthersLayoutRef.current);
     previewRef.current = newPreview;
     setPreviewWidgets([...newPreview]);
   };
@@ -665,13 +671,32 @@ export default function DashboardPage() {
     const w = widgets.find(x => x.id === widgetId);
     let preview: { cols: 1|2|4; rows: 1|2 } = { cols: w?.cols ?? 1, rows: w?.rows ?? 1 };
 
+    // Hysteresis thresholds — expand zone so casual moves don't snap cols/rows.
+    // Each boundary has a "grow" threshold (must go past to step up) and
+    // a "shrink" threshold (must come back past to step down).
+    const colSnap = (relX: number, current: 1|2|4): 1|2|4 => {
+      const raw = relX / (colW + GAP); // 0–4 in column units
+      if (current === 1) return raw > 1.8 ? 2 : 1;           // snap up at 1.8 col
+      if (current === 2) {
+        if (raw < 1.2) return 1;                              // snap down at 1.2
+        if (raw > 3.2) return 4;                              // snap up at 3.2
+        return 2;
+      }
+      return raw < 2.8 ? 2 : 4;                              // snap down at 2.8
+    };
+
+    const rowSnap = (deltaY: number, current: 1|2): 1|2 => {
+      if (current === 1) return deltaY > 90 ? 2 : 1;         // snap to 2 rows after 90px
+      return deltaY < 30 ? 1 : 2;                            // snap back to 1 row before 30px
+    };
+
     const onMove = (me: PointerEvent) => {
       const relX = me.clientX - gridRect.left;
-      const raw = relX / (colW + GAP);
-      const newCols: 1|2|4 = raw < 1.5 ? 1 : raw < 3 ? 2 : 4;
+      const newCols = colSnap(relX, preview.cols);
       const wEl = document.querySelector(`[data-widget-id="${widgetId}"]`);
       const wRect = wEl?.getBoundingClientRect();
-      const newRows: 1|2 = wRect && me.clientY - wRect.bottom > 60 ? 2 : 1;
+      const deltaY = wRect ? me.clientY - wRect.bottom : 0;
+      const newRows = rowSnap(deltaY, preview.rows);
       if (newCols !== preview.cols || newRows !== preview.rows) {
         preview = { cols: newCols, rows: newRows };
         setResizePreview({ id: widgetId, ...preview });
@@ -796,9 +821,8 @@ export default function DashboardPage() {
                   top: isGhost ? ghostPos.y : pos.y,
                   width: pos.w,
                   height: pos.h,
-                  // Ghost floats above; others transition smoothly
                   zIndex: isGhost ? 50 : 1,
-                  transition: isGhost ? "none" : (editMode ? "left 0.22s cubic-bezier(0.4,0,0.2,1), top 0.22s cubic-bezier(0.4,0,0.2,1)" : "left 0.22s, top 0.22s"),
+                  transition: isGhost ? "none" : "left 0.3s ease-out, top 0.3s ease-out",
                   cursor: editMode && !isGhost ? "grab" : "default",
                 }}
                 className={isGhost ? "" : ""}
